@@ -77,9 +77,9 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 
 ## Screenshots
 
-| Landing page (Week 1, Day 5) |
-|---|
-| ![PolyglotMesh landing page](screenshots/day5-landing-page.png) |
+| Landing page | Compiler workspace (dark) | Compiler workspace (light) |
+|---|---|---|
+| ![Landing page](screenshots/day5-landing-page.png) | ![Workspace, dark theme](screenshots/day6-workspace-dark.png) | ![Workspace, light theme](screenshots/day6-workspace-light.png) |
 
 ## Development Roadmap
 

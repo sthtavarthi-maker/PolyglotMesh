@@ -1,4 +1,4 @@
-import type { Language } from '../types/language'
+import type { Language, LanguageId } from '../types/language'
 
 /**
  * Single source of truth for supported languages.
@@ -45,3 +45,7 @@ export const LANGUAGES: Language[] = [
 ]
 
 export const DEFAULT_LANGUAGE_ID = LANGUAGES[0].id
+
+export function getLanguage(id: LanguageId): Language {
+  return LANGUAGES.find((language) => language.id === id) ?? LANGUAGES[0]
+}

@@ -84,11 +84,35 @@ declared in the `@theme` block of `src/index.css` and become utilities automatic
 The palette is dark-only for now; a theme switcher belongs to the workspace (Day 6). Every
 colour combination used for text meets WCAG AA (4.5:1), verified with Lighthouse.
 
+## Workspace
+
+`pages/WorkspacePage.tsx` owns the workspace state and composes `components/workspace/`:
+
+| Component | Role |
+|---|---|
+| `WorkspaceToolbar` | Compiler navigation bar: language, theme, Save / Share / Run |
+| `LanguageSelect` / `ThemeSelect` | Native selects, styled to match the tokens |
+| `EditorPane` | Code editing surface with file name and line count |
+| `InputPanel` | Program input (stdin) |
+| `OutputPanel` | Output area with an empty state |
+| `PaneHeader` | Shared pane header |
+
+Behaviour implemented today:
+
+- **Language switching** loads that language's starter program. Drafts are kept per language, so
+  switching back does not discard typed code.
+- **Theme switching** retints the editor, input and output surfaces through the
+  `.code-surface[data-theme]` custom-property overrides in `src/index.css`; the rest of the site
+  stays dark.
+- **Run, Save and Share are disabled.** There is no backend, so they are rendered with neutral
+  styling and an explanatory note rather than pretending to work.
+- **The editor is a plain textarea** until Monaco is integrated. The output panel shows an empty
+  state only — never simulated program output.
+
 ## Status
 
-Week 1, Day 5 — the landing page is complete: navigation, hero, supported languages, platform
-features, how it works, closing call to action and footer. The compiler workspace and Monaco
-Editor are added on Days 6–7.
+Week 1, Day 6 — the compiler workspace interface is built: language and theme selectors, editor,
+input and output panels, and the action bar. Monaco Editor integration follows on Day 7.
 
 **No code execution is implemented.** Nothing in this client talks to a backend yet; any output
 shown in the UI before backend integration is demonstration data.

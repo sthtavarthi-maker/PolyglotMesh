@@ -63,6 +63,24 @@
   }
 }
 
+/*
+ * The workspace code surfaces can switch to a light editor theme without
+ * affecting the rest of the site. Tailwind utilities read these custom
+ * properties, so overriding them here retints everything inside the grid.
+ */
+.code-surface[data-theme='light'] {
+  --color-base: #f6f8fc;
+  --color-surface: #ffffff;
+  --color-raised: #eef2f8;
+  --color-line: #d3dcea;
+  --color-ink: #0f1b2d;
+  --color-muted: #4a5b74;
+  --color-faint: #52607a;
+  --color-brand: #2563eb;
+  --color-brand-strong: #1d4ed8;
+  --color-brand-deep: #1e40af;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
