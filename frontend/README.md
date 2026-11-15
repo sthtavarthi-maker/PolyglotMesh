@@ -35,10 +35,43 @@ src/
 Folders are created as their first real content arrives during Week 1. Empty folders are
 tracked with a `.gitkeep` file.
 
+## Routes
+
+| Path | Component | Purpose |
+|---|---|---|
+| `/` | `pages/HomePage.tsx` | Landing page (full content arrives on Day 5) |
+| `/workspace` | `pages/WorkspacePage.tsx` | Compiler workspace (built on Days 6–7) |
+| `*` | `pages/NotFoundPage.tsx` | 404 fallback |
+
+Routing uses `react-router-dom` with `BrowserRouter` mounted in `main.tsx`. Routes are declared
+in `App.tsx` as children of `components/layout/AppLayout.tsx`, so every page automatically gets
+the shared header, footer and skip link. Each page sets its own tab title through the
+`hooks/useDocumentTitle.ts` hook.
+
+## Styling
+
+Tailwind CSS **v4** is configured through the `@tailwindcss/vite` plugin — there is no
+`tailwind.config.js` and no `@tailwind base/components/utilities` directive. Design tokens are
+declared in the `@theme` block of `src/index.css` and become utilities automatically:
+
+| Token | Utility | Use |
+|---|---|---|
+| `--color-base` | `bg-base` | Page background |
+| `--color-surface` | `bg-surface` | Panels and cards |
+| `--color-raised` | `bg-raised` | Hover and active surfaces |
+| `--color-line` | `border-line` | Borders and dividers |
+| `--color-ink` / `--color-muted` / `--color-faint` | `text-ink` etc. | Text hierarchy |
+| `--color-brand` / `--color-brand-strong` / `--color-brand-deep` | `text-brand`, `bg-brand-strong` | Links, accents, buttons |
+| `--color-accent` | `text-accent` | Secondary accent |
+| `--radius-panel` | `rounded-panel` | Panel corners |
+
+The palette is dark-only for now; a theme switcher belongs to the workspace (Day 6). Every
+colour combination used for text meets WCAG AA (4.5:1), verified with Lighthouse.
+
 ## Status
 
-Week 1, Day 3 — the React application is initialized and running. Styling (Tailwind CSS),
-routing, the landing page, the compiler workspace and Monaco Editor are added on Days 4–7.
+Week 1, Day 4 — Tailwind CSS, routing, layout shell and responsive page structure are in place.
+The landing page, compiler workspace and Monaco Editor are added on Days 5–7.
 
 **No code execution is implemented.** Nothing in this client talks to a backend yet; any output
 shown in the UI before backend integration is demonstration data.
