@@ -17,7 +17,7 @@ command shown next to it.
 | # | Tool | Required | Found | Status |
 |---|---|---|---|---|
 | 1 | Java (JDK) 21 | 21.x | 21.0.12 (Oracle JDK) | **Present** — but not the default `java` |
-| 2 | GraalVM for JDK 21 | 21.x | — | **Missing** |
+| 2 | GraalVM for JDK 21 | 21.x | Oracle GraalVM 21.0.12+7.1 | **Present** — not on `PATH` |
 | 3 | Maven | 3.9.x | 3.9.16 | **Present** — not on `PATH` |
 | 4 | Node.js | 20.19+ / 22.12+ | 25.7.0 | **Present** (non-LTS release) |
 | 5 | npm | bundled with Node | 11.10.1 | **Present** |
@@ -90,32 +90,47 @@ directory needs to be on PATH.
 
 ---
 
-## 4. GraalVM for JDK 21 — Missing
+## 4. GraalVM for JDK 21
 
-No GraalVM installation was found. A search across `C:\`, `E:\`, `C:\Program Files`,
-`E:\Program Files`, and the user profile (depth 3) returned only the *Graal compiler* legal
-notices that ship inside Oracle JDK 25 — those are not GraalVM:
+Installed at `E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1`.
 
+```powershell
+$env:GRAALVM_HOME = "E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1"
+
+& "$env:GRAALVM_HOME\bin\java.exe" -version
+# java version "21.0.12" 2026-07-21 LTS
+# Java(TM) SE Runtime Environment Oracle GraalVM 21.0.12+7.1
+#   (build 21.0.12+7-LTS-jvmci-23.1-b96)
+
+& "$env:GRAALVM_HOME\bin\native-image.cmd" --version
+# native-image 21.0.12 2026-07-21
+# GraalVM Runtime Environment Oracle GraalVM 21.0.12+7.1
 ```
-C:\Program Files\Java\jdk-25\legal\jdk.graal.compiler
-C:\Program Files\Java\jdk-25\legal\jdk.graal.compiler.management
-```
 
-`native-image` is not on PATH, and neither `GRAALVM_HOME` nor any GraalVM directory exists.
+Its `release` file confirms `GRAALVM_VERSION="23.1.12"` (that is the GraalVM release number,
+paired with JDK 21.0.12) and lists the polyglot modules: `org.graalvm.truffle.compiler`,
+`org.graalvm.nativeimage`, `jdk.internal.vm.compiler`.
+
+### Notes
+
+- The install is **not on PATH**. `java` still resolves to JDK 17, and no `GRAALVM_HOME` is set.
+  Until that changes, Gradle/Maven builds must be given this JDK explicitly, and the backend
+  must be launched through `E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1\bin\java.exe`.
+- This is a **JDK-level** GraalVM. It does **not** bundle the JavaScript or Python language
+  runtimes: `bin` has no `js`, `python` or `polyglot` launcher. Those are added per-project as
+  Maven dependencies (`org.graalvm.polyglot:polyglot`, plus the `js` and `python` language
+  artifacts), which is exactly the integration the project plans to use. Nothing is missing —
+  this is the expected setup for an embedded Polyglot API application.
 
 **Impact:**
 
-- **Week 1 is unaffected.** Week 1 is frontend-only (React/TypeScript/Vite) and does not need
-  a JVM at all beyond an IDE's language server.
-- **Required before backend execution work.** The project plan executes JavaScript and Python
-  through the GraalVM Polyglot API, which is a GraalVM capability. A stock HotSpot JDK can run
-  the Polyglot API for Java only; JS and Python require GraalVM. The backend server itself can
-  be developed and tested on plain JDK 21, but the multi-language execution path cannot.
+- **Week 1 is unaffected.** Week 1 is frontend-only (React/TypeScript/Vite).
+- **Backend execution is unblocked**, once the backend adds the polyglot Maven dependencies and
+  runs on this JDK. Verified present; wiring is backend work, not environment work.
 
-**Recommendation (needs approval before acting):** install GraalVM for JDK 21 (Temurin/GraalVM
-Community 21, x64 Windows) and point `JAVA_HOME` at it, so that one JDK satisfies both the
-Spring Boot runtime and the polyglot requirement. User-level environment changes only — no
-system-wide variable edits.
+**Recommendation (needs approval before acting):** set `GRAALVM_HOME` to this path, add its
+`bin` to PATH, and point `JAVA_HOME` at it so one JDK covers both Spring Boot and polyglot
+execution. User-level variables only.
 
 ---
 
@@ -180,7 +195,7 @@ the project owner's approval.
 | 1 | Default `java` on PATH is JDK 17 Temurin | IDE terminals, scripts and `java -jar` use 17 while Maven uses 21 — confusing failures, class-file version mismatches | Put `%JAVA_HOME%\bin` **before** `E:\Program Files\Java\JDK-17\bin` in the user PATH |
 | 2 | `mvn` not on PATH | Backend cannot be built with a plain `mvn` command | Add `C:\Users\Keerthana\.maven\apache-maven-3.9.16\bin` to the user PATH |
 | 3 | Stale PATH entry `C:\Program Files\Java\jdk-21\bin` | Directory does not exist; entry is dead weight | Remove the entry |
-| 4 | GraalVM for JDK 21 not installed | Blocks JS/Python execution via the Polyglot API in the backend phase | Install GraalVM 21 and repoint `JAVA_HOME` |
+| 4 | GraalVM installed but not on PATH; `GRAALVM_HOME` unset | Backend would run on JDK 17 (no polyglot) if launched by a plain `java` command | Set `GRAALVM_HOME`, add its `bin` to PATH, repoint `JAVA_HOME` |
 
 None of these block Week 1.
 
@@ -208,7 +223,8 @@ git --version; git remote -v; git branch --show-current
 where.exe java; where.exe javac; where.exe node; where.exe git
 
 # GraalVM presence
-Get-Command native-image -ErrorAction SilentlyContinue
+& "E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1\bin\java.exe" -version
+& "E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1\bin\native-image.cmd" --version
 ```
 
 ---
@@ -218,7 +234,7 @@ Get-Command native-image -ErrorAction SilentlyContinue
 | Requirement | Result |
 |---|---|
 | Java 21 available | Verified — 21.0.12 at `E:\Program Files\Java` (not the default on PATH) |
-| GraalVM JDK 21 available | **Not available** — documented in section 4, install needs approval |
+| GraalVM JDK 21 available | Verified — Oracle GraalVM 21.0.12+7.1 at `E:\keerthana\graalvm\graalvm-jdk-21.0.12+7.1` (not on PATH) |
 | Maven available | Verified — 3.9.16, invoked by full path (not on PATH) |
 | Node.js available | Verified — v25.7.0 |
 | npm available | Verified — 11.10.1 |
