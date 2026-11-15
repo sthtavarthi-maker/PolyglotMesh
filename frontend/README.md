@@ -17,6 +17,22 @@ npm run preview  # serve the production build locally
 npm run lint     # run oxlint
 ```
 
+## Landing Page
+
+`pages/HomePage.tsx` composes self-contained sections from `components/landing/`:
+
+| Component | Section |
+|---|---|
+| `HeroSection` | Headline, description, Start coding button, supporting facts |
+| `EditorPreview` | Static CSS-only illustration of the editor (marked as an illustration) |
+| `LanguagesSection` | Java, Python and JavaScript cards, generated from `data/languages.ts` |
+| `FeaturesSection` | Six platform capabilities with inline SVG icons |
+| `HowItWorksSection` | Choose → write → run, save, share |
+| `CtaSection` | Closing call to action |
+
+Language metadata and starter programs live in `src/data/languages.ts` (typed by
+`src/types/language.ts`) so the landing page and, later, the editor use one source of truth.
+
 ## Source Layout
 
 ```
@@ -70,8 +86,9 @@ colour combination used for text meets WCAG AA (4.5:1), verified with Lighthouse
 
 ## Status
 
-Week 1, Day 4 — Tailwind CSS, routing, layout shell and responsive page structure are in place.
-The landing page, compiler workspace and Monaco Editor are added on Days 5–7.
+Week 1, Day 5 — the landing page is complete: navigation, hero, supported languages, platform
+features, how it works, closing call to action and footer. The compiler workspace and Monaco
+Editor are added on Days 6–7.
 
 **No code execution is implemented.** Nothing in this client talks to a backend yet; any output
 shown in the UI before backend integration is demonstration data.

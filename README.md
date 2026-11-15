@@ -75,6 +75,12 @@ The backend is introduced in a later development day. See
 The verified local development environment (tool versions, known PATH issues, and how to re-check
 everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
 
+## Screenshots
+
+| Landing page (Week 1, Day 5) |
+|---|
+| ![PolyglotMesh landing page](screenshots/day5-landing-page.png) |
+
 ## Development Roadmap
 
 | Day | Scope |

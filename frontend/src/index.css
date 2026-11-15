@@ -34,12 +34,19 @@
   --font-mono:
     'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
+  /* Editor syntax colours used by the landing page preview */
+  --color-syn-keyword: #c792ea;
+  --color-syn-string: #9ad48d;
+  --color-syn-type: #7ce0c0;
+  --color-syn-comment: #6f81a3;
+
   --radius-panel: 0.875rem;
 }
 
 @layer base {
   html {
     color-scheme: dark;
+    scroll-behavior: smooth;
   }
 
   body {
