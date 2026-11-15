@@ -54,13 +54,23 @@ PolyglotMesh/
 
 ## Getting Started
 
-The frontend and backend are introduced in later development days. Until then, the only requirement is
-Git and a GitHub account.
-
 ```bash
 git clone https://github.com/sthtavarthi-maker/PolyglotMesh.git
 cd PolyglotMesh
 ```
+
+### Frontend
+
+Requires Node.js 20.19+ (verified with 25.7.0).
+
+```bash
+cd frontend
+npm install
+npm run dev      # http://localhost:5173
+```
+
+The backend is introduced in a later development day. See
+[`frontend/README.md`](frontend/README.md) for all frontend scripts and the `src/` layout.
 
 The verified local development environment (tool versions, known PATH issues, and how to re-check
 everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
