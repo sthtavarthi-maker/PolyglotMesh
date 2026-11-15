@@ -62,8 +62,8 @@ git clone https://github.com/sthtavarthi-maker/PolyglotMesh.git
 cd PolyglotMesh
 ```
 
-Setup instructions for the local development environment will be documented in
-`docs/DEVELOPMENT_SETUP.md` (Day 2).
+The verified local development environment (tool versions, known PATH issues, and how to re-check
+everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
 
 ## Development Roadmap
 
