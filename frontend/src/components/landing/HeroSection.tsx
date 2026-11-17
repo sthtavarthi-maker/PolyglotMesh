@@ -1,9 +1,10 @@
 import { Link } from 'react-router-dom'
+import { LANGUAGES } from '../../data/languages'
 import { Container } from '../layout/Container'
 import { EditorPreview } from './EditorPreview'
 
 const HERO_FACTS = [
-  { value: '3', label: 'languages' },
+  { value: String(LANGUAGES.length), label: 'languages' },
   { value: '1', label: 'runtime' },
   { value: '0', label: 'installs' },
 ]
@@ -26,13 +27,13 @@ export function HeroSection() {
             </p>
 
             <h1 className="mt-5 text-4xl font-semibold tracking-tight text-balance sm:text-5xl lg:text-[3.25rem] lg:leading-[1.08]">
-              One workspace for Java, Python and JavaScript.
+              One workspace for nine languages.
             </h1>
 
             <p className="text-muted mt-5 text-lg leading-relaxed">
-              PolyglotMesh runs your code on a GraalVM-backed service, so three
-              languages share one environment. Write in the browser, keep your
-              input next to your output, and share a snippet with a link.
+              PolyglotMesh is built on a GraalVM-backed service, so languages
+              share one environment. Write in the browser, keep your input next
+              to your output, and share a snippet with a link.
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-3">

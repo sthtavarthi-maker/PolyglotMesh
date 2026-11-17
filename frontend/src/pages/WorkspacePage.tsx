@@ -59,7 +59,7 @@ export function WorkspacePage() {
           </h1>
         </div>
         <p className="text-faint text-xs">
-          Java, Python and JavaScript · one editor
+          {LANGUAGES.length} languages · one editor
         </p>
       </header>
 

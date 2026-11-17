@@ -25,13 +25,42 @@ npm run lint     # run oxlint
 |---|---|
 | `HeroSection` | Headline, description, Start coding button, supporting facts |
 | `EditorPreview` | Static CSS-only illustration of the editor (marked as an illustration) |
-| `LanguagesSection` | Java, Python and JavaScript cards, generated from `data/languages.ts` |
+| `LanguagesSection` | All nine language cards, generated from `data/languages.ts` |
 | `FeaturesSection` | Six platform capabilities with inline SVG icons |
 | `HowItWorksSection` | Choose → write → run, save, share |
 | `CtaSection` | Closing call to action |
 
 Language metadata and starter programs live in `src/data/languages.ts` (typed by
-`src/types/language.ts`) so the landing page and, later, the editor use one source of truth.
+`src/types/language.ts`) so the landing page and the workspace use one source of truth.
+
+## Languages
+
+Nine languages are available in the editor. `src/data/languages.ts` is the only place that
+defines them:
+
+| Language | Monaco language id | File | Indentation | Starter program | Execution backend |
+|---|---|---|---|---|---|
+| Java | `java` | `Main.java` | 4 spaces | `public class Main` with `System.out.println` | GraalVM JDK 21 (planned) |
+| Python | `python` | `main.py` | 4 spaces | `print("Hello PolyglotMesh!")` | GraalVM Polyglot / GraalPy (planned) |
+| JavaScript | `javascript` | `main.js` | 2 spaces | `console.log("Hello PolyglotMesh!")` | GraalVM Polyglot / GraalJS (planned) |
+| Ruby | `ruby` | `main.rb` | 2 spaces | `puts` with string interpolation | Not integrated — editor only |
+| C | `c` | `main.c` | 4 spaces | `printf` inside `int main` | Not integrated — editor only |
+| C++ | `cpp` | `main.cpp` | 4 spaces | `cout` inside `int main` | Not integrated — editor only |
+| Rust | `rust` | `main.rs` | 4 spaces | `println!` inside `fn main` | Not integrated — editor only |
+| Go | `go` | `main.go` | 4 spaces, tab characters | `fmt.Println` inside `func main` | Not integrated — editor only |
+| R | `r` | `main.r` | 2 spaces | `print` of a string variable | Not integrated — editor only |
+
+**Editor support is not execution support.** Every entry has a Monaco mode, file extension,
+starter program and syntax highlighting, but nothing runs yet: the backend is not connected, so
+Run, Save and Share stay disabled for all nine languages. `runtime` in the language record names
+the engine a language is intended to use, or is `null` while it is editor-only. The workspace
+shows an "editor-only" note for those six languages instead of promising execution. Do not
+describe Ruby, C, C++, Rust, Go or R as runnable until their runtime integrations exist and are
+tested.
+
+Monaco 0.57 registers `c` and `cpp` from the same C/C++ grammar (`cpp/register.js`), so C and C++
+share a tokenizer chunk while keeping distinct modes and file names. All nine ids were checked
+against `node_modules/monaco-editor/esm/vs/languages/definitions/`.
 
 ## Source Layout
 
@@ -101,13 +130,15 @@ colour combination used for text meets WCAG AA (4.5:1), verified with Lighthouse
 
 Behaviour implemented today:
 
-- **Language switching** loads that language's starter program. Drafts are kept per language, so
-  switching back does not discard typed code.
+- **Language switching** loads that language's starter program. Drafts are kept per language for
+  all nine languages, so switching back does not discard typed code. The file name, Monaco mode,
+  tab size and indentation style follow the selection.
 - **Theme switching** retints the editor, input and output surfaces through the
   `.code-surface[data-theme]` custom-property overrides in `src/index.css`; the rest of the site
   stays dark.
 - **Run, Save and Share are disabled.** There is no backend, so they are rendered with neutral
-  styling and an explanatory note rather than pretending to work.
+  styling and an explanatory note rather than pretending to work. For the six editor-only
+  languages the note states that no runtime is integrated for them yet.
 - **The output panel shows an empty state only** — never simulated program output.
 
 ## Editor
@@ -118,8 +149,10 @@ The code editor is **Monaco self-hosted through Vite**, not loaded from a CDN.
   `monaco-editor` package, registers the editor and TypeScript workers with Vite (`?worker`), and
   defines the `polyglotmesh-dark` / `polyglotmesh-light` themes. Those themes reuse the same
   colours as the CSS tokens so editor and panel look like one surface.
-- `src/components/workspace/CodeEditor.tsx` holds the editor options: line numbers, tab size per
-  language, spaces instead of tabs, full auto-indent, no minimap, oversized-widget bounds.
+- `src/components/workspace/CodeEditor.tsx` holds the editor options: line numbers, per-language
+  tab size and indentation (Go inserts tab characters, the other eight insert spaces), full
+  auto-indent, no minimap, oversized-widget bounds. The Monaco language id is passed separately
+  from the PolyglotMesh language id.
 - Monaco is **code-split**: `EditorPane` imports `CodeEditor` with `React.lazy`, so the engine
   (~4 MB of JS with its workers) is fetched only when someone opens `/workspace`. Every language
   definition is its own chunk as well.
@@ -134,9 +167,10 @@ The code editor is **Monaco self-hosted through Vite**, not loaded from a CDN.
 
 ## Status
 
-Week 1, Day 7 — the compiler workspace runs on Monaco: line numbers, syntax highlighting,
-auto-indent, per-language tab sizes, Java / Python / JavaScript modes, language switching with
-drafts kept per language, and dark / light editor themes.
+Week 1, Day 8 — the compiler workspace runs on Monaco with nine language modes, per-language
+starter programs, file extensions, tab sizes and independent drafts, plus dark / light editor
+themes. Java, Python and JavaScript are the three languages the backend is being built for;
+Ruby, C, C++, Rust, Go and R are editor-only for now and are labelled that way in the UI.
 
 **No code execution is implemented.** Nothing in this client talks to a backend yet; any output
 shown in the UI before backend integration is demonstration data.

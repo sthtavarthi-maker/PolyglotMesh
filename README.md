@@ -14,13 +14,14 @@ judge is involved.
 
 ## Planned Features
 
-- Multi-language code editor (Java, Python, JavaScript)
+- Multi-language code editor (Java, Python, JavaScript, Ruby, C, C++, Rust, Go, R)
 - Language-aware starter code and syntax highlighting
 - Program input (stdin) and output panels
 - Save and share code snippets
 - Light and dark editor themes
 - Account authentication with JWT
-- Execution powered by the GraalVM Polyglot API
+- Execution powered by the GraalVM Polyglot API (Java, Python and JavaScript first; the other
+  six editor modes are not executable until their runtime integrations land)
 
 ## Technology Stack
 
@@ -92,6 +93,7 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 | 5 | Landing page |
 | 6 | Compiler workspace UI |
 | 7 | Monaco Editor integration |
+| 8 | Nine-language editor support (Java, Python, JavaScript, Ruby, C, C++, Rust, Go, R; editor-only for the six new modes) |
 
 Further weekly plans are added as the project progresses.
 

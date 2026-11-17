@@ -1,3 +1,4 @@
+import { getLanguage } from '../../data/languages'
 import type { LanguageId } from '../../types/language'
 import type { EditorTheme } from '../../types/workspace'
 import { LanguageSelect } from './LanguageSelect'
@@ -36,6 +37,8 @@ export function WorkspaceToolbar({
   theme,
   onThemeChange,
 }: WorkspaceToolbarProps) {
+  const language = getLanguage(languageId)
+
   return (
     <div className="border-line bg-surface/70 rounded-panel border">
       <div className="flex flex-wrap items-center justify-between gap-3 p-2.5">
@@ -124,8 +127,9 @@ export function WorkspaceToolbar({
         id={NOTE_ID}
         className="border-line/70 text-faint border-t px-3 py-2 text-[11px]"
       >
-        Execution service not connected. Run, Save and Share stay disabled until
-        the GraalVM backend is available.
+        {language.runtime === null
+          ? `${language.name} is editor-only: no runtime is integrated for it yet. Execution is not connected, so Run, Save and Share stay disabled.`
+          : 'Execution service not connected. Run, Save and Share stay disabled until the GraalVM backend is available.'}
       </p>
     </div>
   )

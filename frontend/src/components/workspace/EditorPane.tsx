@@ -39,8 +39,9 @@ export function EditorPane({
         <Suspense fallback={<EditorLoading />}>
           <CodeEditor
             fileName={language.fileName}
-            language={language.id}
+            language={language.monacoLanguage}
             tabSize={language.tabSize}
+            insertSpaces={language.insertSpaces}
             theme={theme}
             value={code}
             onChange={onChange}
@@ -51,7 +52,8 @@ export function EditorPane({
       <div className="border-line/80 text-faint flex items-center justify-between gap-3 border-t px-3 py-1.5 text-[11px]">
         <span>{lineCount(code)} lines</span>
         <span className="font-mono">
-          {language.name} · tab size {language.tabSize} · spaces
+          {language.name} · tab size {language.tabSize} ·{' '}
+          {language.insertSpaces ? 'spaces' : 'tabs'}
         </span>
       </div>
     </section>

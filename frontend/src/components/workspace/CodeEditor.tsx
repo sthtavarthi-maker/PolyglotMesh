@@ -8,6 +8,7 @@ type CodeEditorProps = {
   fileName: string
   language: string
   tabSize: number
+  insertSpaces: boolean
   theme: EditorTheme
   value: string
   onChange: (value: string) => void
@@ -26,6 +27,7 @@ export function CodeEditor({
   fileName,
   language,
   tabSize,
+  insertSpaces,
   theme,
   value,
   onChange,
@@ -96,7 +98,7 @@ export function CodeEditor({
           fontSize: 13,
           lineHeight: 24,
           tabSize,
-          insertSpaces: true,
+          insertSpaces,
           autoIndent: 'full',
           detectIndentation: false,
           wordWrap: 'off',

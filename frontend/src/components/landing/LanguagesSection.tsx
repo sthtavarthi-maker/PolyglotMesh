@@ -19,7 +19,7 @@ export function LanguagesSection() {
         <SectionHeading
           eyebrow="Supported languages"
           title="Start with the languages you already know"
-          description="Each language gets its own editor mode, starter program and syntax highlighting. Java runs on the GraalVM JDK; Python and JavaScript run through the GraalVM Polyglot API."
+          description="Nine editor modes, one workspace. Java, Python and JavaScript are the runtimes PolyglotMesh is being built for; Ruby, C, C++, Rust, Go and R currently have editor support only."
         />
 
         <ul className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -48,8 +48,14 @@ export function LanguagesSection() {
               </pre>
 
               <p className="text-faint flex items-center gap-2 text-xs">
-                <span className="bg-accent/80 size-1.5 rounded-full" />
-                {language.runtime}
+                <span
+                  className={
+                    language.runtime === null
+                      ? 'bg-faint size-1.5 rounded-full'
+                      : 'bg-accent/80 size-1.5 rounded-full'
+                  }
+                />
+                {language.runtime ?? 'Editor only'}
               </p>
             </li>
           ))}
