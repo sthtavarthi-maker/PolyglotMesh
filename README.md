@@ -77,9 +77,9 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 
 ## Screenshots
 
-| Landing page | Compiler workspace (dark) | Compiler workspace (light) |
+| Landing page | Compiler workspace, Monaco (dark) | Compiler workspace, Monaco (light) |
 |---|---|---|
-| ![Landing page](screenshots/day5-landing-page.png) | ![Workspace, dark theme](screenshots/day6-workspace-dark.png) | ![Workspace, light theme](screenshots/day6-workspace-light.png) |
+| ![Landing page](screenshots/day5-landing-page.png) | ![Workspace with Monaco, dark theme](screenshots/day7-workspace-monaco-dark.png) | ![Workspace with Monaco, light theme](screenshots/day7-workspace-monaco-light.png) |
 
 ## Development Roadmap
 
