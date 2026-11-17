@@ -74,7 +74,12 @@ export function WorkspacePage() {
         data-theme={theme}
         className="code-surface mt-4 grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]"
       >
-        <EditorPane fileName={language.fileName} code={code} onChange={updateCode} />
+        <EditorPane
+          language={language}
+          code={code}
+          theme={theme}
+          onChange={updateCode}
+        />
 
         <div className="flex min-w-0 flex-col gap-4">
           <InputPanel value={stdin} onChange={setStdin} />

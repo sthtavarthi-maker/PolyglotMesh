@@ -39,6 +39,7 @@ Language metadata and starter programs live in `src/data/languages.ts` (typed by
 src/
 ├── components/   Reusable presentational components
 ├── pages/        Route-level page components
+├── lib/          Third-party setup (Monaco loader, themes, workers)
 ├── services/     API clients and backend communication
 ├── hooks/        Custom React hooks
 ├── context/      React context providers
@@ -56,7 +57,7 @@ tracked with a `.gitkeep` file.
 | Path | Component | Purpose |
 |---|---|---|
 | `/` | `pages/HomePage.tsx` | Landing page (full content arrives on Day 5) |
-| `/workspace` | `pages/WorkspacePage.tsx` | Compiler workspace (built on Days 6–7) |
+| `/workspace` | `pages/WorkspacePage.tsx` | Compiler workspace with the Monaco editor |
 | `*` | `pages/NotFoundPage.tsx` | 404 fallback |
 
 Routing uses `react-router-dom` with `BrowserRouter` mounted in `main.tsx`. Routes are declared
@@ -92,7 +93,8 @@ colour combination used for text meets WCAG AA (4.5:1), verified with Lighthouse
 |---|---|
 | `WorkspaceToolbar` | Compiler navigation bar: language, theme, Save / Share / Run |
 | `LanguageSelect` / `ThemeSelect` | Native selects, styled to match the tokens |
-| `EditorPane` | Code editing surface with file name and line count |
+| `EditorPane` | Editor panel: file name, Monaco surface, line count |
+| `CodeEditor` | Monaco wrapper (loaded lazily, see below) |
 | `InputPanel` | Program input (stdin) |
 | `OutputPanel` | Output area with an empty state |
 | `PaneHeader` | Shared pane header |
@@ -106,13 +108,35 @@ Behaviour implemented today:
   stays dark.
 - **Run, Save and Share are disabled.** There is no backend, so they are rendered with neutral
   styling and an explanatory note rather than pretending to work.
-- **The editor is a plain textarea** until Monaco is integrated. The output panel shows an empty
-  state only — never simulated program output.
+- **The output panel shows an empty state only** — never simulated program output.
+
+## Editor
+
+The code editor is **Monaco self-hosted through Vite**, not loaded from a CDN.
+
+- `src/lib/monacoSetup.ts` points `@monaco-editor/react`'s loader at the locally installed
+  `monaco-editor` package, registers the editor and TypeScript workers with Vite (`?worker`), and
+  defines the `polyglotmesh-dark` / `polyglotmesh-light` themes. Those themes reuse the same
+  colours as the CSS tokens so editor and panel look like one surface.
+- `src/components/workspace/CodeEditor.tsx` holds the editor options: line numbers, tab size per
+  language, spaces instead of tabs, full auto-indent, no minimap, oversized-widget bounds.
+- Monaco is **code-split**: `EditorPane` imports `CodeEditor` with `React.lazy`, so the engine
+  (~4 MB of JS with its workers) is fetched only when someone opens `/workspace`. Every language
+  definition is its own chunk as well.
+- **Layout is driven explicitly.** `@monaco-editor/react` creates the editor inside a wrapper that
+  is `display: none` until ready. Monaco measures that container, gets 0×0, clamps it to its 5px
+  minimum (`ElementSizeObserver` uses `Math.max(5, size)`) and then keeps rendering a 5px box. The
+  wrapper therefore measures the real panel itself and calls `editor.layout({ width, height })` on
+  mount, on the next task and on every `ResizeObserver` callback. It does not use
+  `requestAnimationFrame`, because rAF never fires in a background tab.
+- `monaco-editor@0.57` ships a vulnerable `dompurify`; `package.json` pins the patched
+  `dompurify@^3.4.18` through `overrides` so `npm audit` stays clean.
 
 ## Status
 
-Week 1, Day 6 — the compiler workspace interface is built: language and theme selectors, editor,
-input and output panels, and the action bar. Monaco Editor integration follows on Day 7.
+Week 1, Day 7 — the compiler workspace runs on Monaco: line numbers, syntax highlighting,
+auto-indent, per-language tab sizes, Java / Python / JavaScript modes, language switching with
+drafts kept per language, and dark / light editor themes.
 
 **No code execution is implemented.** Nothing in this client talks to a backend yet; any output
 shown in the UI before backend integration is demonstration data.

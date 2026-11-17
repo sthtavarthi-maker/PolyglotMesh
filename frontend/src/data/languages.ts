@@ -15,6 +15,7 @@ export const LANGUAGES: Language[] = [
     runtime: 'GraalVM JDK 21',
     description:
       'Compile and run Java 21 on the GraalVM JDK, using the standard toolchain.',
+    tabSize: 4,
     starterCode: `public class Main {
     public static void main(String[] args) {
         System.out.println("Hello PolyglotMesh!");
@@ -29,6 +30,7 @@ export const LANGUAGES: Language[] = [
     runtime: 'GraalVM Polyglot',
     description:
       'Run Python on GraalPy inside the same JVM as the rest of the platform.',
+    tabSize: 4,
     starterCode: `print("Hello PolyglotMesh!")
 `,
   },
@@ -39,6 +41,7 @@ export const LANGUAGES: Language[] = [
     runtime: 'GraalVM Polyglot',
     description:
       'Execute JavaScript on GraalJS with no separate runtime to install.',
+    tabSize: 2,
     starterCode: `console.log("Hello PolyglotMesh!");
 `,
   },

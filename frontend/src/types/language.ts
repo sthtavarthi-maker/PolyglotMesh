@@ -10,6 +10,8 @@ export type Language = {
   runtime: string
   /** One-line description used on cards. */
   description: string
+  /** Indentation width for this language. */
+  tabSize: number
   /** Default program loaded when this language is selected. */
   starterCode: string
 }
