@@ -6,16 +6,17 @@ implements today.
 
 - **Repository:** `https://github.com/sthtavarthi-maker/PolyglotMesh`
 - **Documented branch:** `leelavardhini-dev`
-- **Baseline commit:** `3067ae0` ("Expand editor to nine languages")
-- **Last reviewed:** 18 November 2026
+- **Baseline commit:** `d58177a` ("Day 9: Establish backend architecture"), merged into this branch
+- **Last reviewed:** 19 November 2026
 - **Scope:** language runtimes, execution adapters, host toolchain requirements and sandbox
   controls. No application code is changed by this document.
 
 > **Read this first.** PolyglotMesh currently has **no working code execution**. Nine languages
-> are available as editor modes only. Every runtime integration described below is either
-> *planned* or, at most, *configured as metadata*. Nothing is implemented, and nothing has been
-> tested end to end. Sections that describe architecture or security controls are **design
-> intent**, not descriptions of shipped behaviour.
+> are available as editor modes only. Day 9 added the unified execution API and the adapter
+> contract, but no adapter is registered, so `POST /api/execute` answers `501 Not Implemented`
+> for every language. Nothing executes end to end, and no runtime has been tested. Sections that
+> describe adapters, isolation or security controls are **design intent**, not descriptions of
+> shipped behaviour.
 
 ---
 
@@ -64,11 +65,12 @@ nine execution runtimes. **No language is Implemented or Tested.**
 ## 2. Language Runtime Compatibility Matrix
 
 Execution Method and Integration Type describe the **intended** design. Implementation Status
-describes the **current** state of the repository at the baseline commit.
+describes the **current** state of the repository at the baseline commit. Since Day 9 the unified
+endpoint exists, but with no registered executor it returns `501` for all nine languages.
 
 | Programming Language | Runtime / Compiler | Execution Method | Integration Type | Implementation Status |
 |---|---|---|---|---|
-| Java | GraalVM JDK 21 / `javax.tools.JavaCompiler` | In-process compile, then load and invoke in an isolated class loader | In-process (JVM) | Editor **Configured**; runtime **Planned** - no compiler adapter or execution endpoint exists |
+| Java | GraalVM JDK 21 / `javax.tools.JavaCompiler` | In-process compile, then load and invoke in an isolated class loader | In-process (JVM) | Editor **Configured**; runtime **Planned** - no `CodeExecutor` implementation exists |
 | Python | GraalPy (GraalVM Python) | In-process `Context.eval("python", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - GraalPy is named in docs, no dependency wired |
 | JavaScript | GraalJS (GraalVM JavaScript) | In-process `Context.eval("js", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - GraalJS is named in docs, no dependency wired |
 | Ruby | TruffleRuby | In-process `Context.eval("ruby", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - TruffleRuby is not referenced anywhere in the repository |
@@ -103,19 +105,27 @@ For Ruby, C, C++, Rust, Go and R, the runtime label is `null`, so even the *inte
 not recorded in the application. The engines in the matrix above come from the project plan
 (README, roadmap) and this design document, not from code.
 
-### 2.2 What is absent
+### 2.2 What exists and what is absent
 
-At the baseline commit, the repository contains:
+Day 9 establishes the execution **API skeleton**, not execution itself:
+
+- `POST /api/execute` exists and validates `language`, `code` (100,000 character cap) and
+  `input` (10,000 character cap);
+- `ExecutionService` resolves the language against a nine-value `Language` enum and routes to a
+  `CodeExecutor` bean;
+- no `CodeExecutor` implementation is registered, so every valid request fails closed with
+  `501 Not Implemented` instead of returning invented output;
+- JSON error responses are centralised in `GlobalExceptionHandler`.
+
+Still absent:
 
 - no GraalVM Polyglot dependency (`org.graalvm.polyglot`) in any build file;
-- no execution endpoint (no `/api/execute`);
-- no execution service, adapter, registry or dispatcher;
 - no compiler or interpreter invocation code;
-- no execution-related automated test.
+- no timeout, memory, process or filesystem enforcement;
+- no test that executes a real language runtime.
 
-The `backend/` directory on this branch is a placeholder tracked only by `backend/.gitkeep`. The
-backend skeleton on `main` (Day 8) exposes a health endpoint only and its own README states:
-"No code execution of any kind. `/api/execute` arrives on Day 9-14."
+The backend is a Spring Boot skeleton whose only working endpoints are `/api/health`,
+`/actuator/health` and `/actuator/info`; `/api/execute` is wired but unimplemented.
 
 ---
 
@@ -226,68 +236,73 @@ R is interpreted with `Rscript` in a restricted child process.
 ## 4. Execution Architecture
 
 The architecture separates **one public contract** from **many independent adapters**. The goal
-is that adding a language never changes the HTTP layer or the frontend.
+is that adding a language never changes the HTTP layer or the frontend. Day 9 implements the
+contract, validation and routing; the executors themselves remain future work.
 
-### 4.1 Request flow (design)
+### 4.1 Request flow (implemented to the executor boundary)
 
 ```text
 Browser (React workspace)
         |
-        | POST /api/execute  { language, source, stdin, limits }
+        | POST /api/execute  { language, code, input }
         v
-ExecutionController            (HTTP validation, request identity)
+ExecutionController            (HTTP validation, status codes)
         |
         v
-ExecutionService               (orchestration, timeouts, result assembly)
+ExecutionService               (Language.fromId, executor routing)
         |
         v
-LanguageAdapterRegistry        (language id -> adapter, fail closed on unknown ids)
+CodeExecutor (interface)       (no implementation registered on Day 9)
         |
-        +--> JavaExecutionAdapter        in-process (JavaCompiler + ClassLoader)
-        +--> GraalPyExecutionAdapter     in-process (Polyglot Context, python)
-        +--> GraalJSExecutionAdapter     in-process (Polyglot Context, js)
-        +--> TruffleRubyExecutionAdapter in-process (Polyglot Context, ruby)
-        +--> CExecutionAdapter           out-of-process (gcc/clang)
-        +--> CppExecutionAdapter         out-of-process (g++/clang++)
-        +--> RustExecutionAdapter        out-of-process (rustc)
-        +--> GoExecutionAdapter          out-of-process (go build)
-        +--> RExecutionAdapter           out-of-process (Rscript)
+        X  501 Not Implemented  (fail closed, never invented output)
+
+Planned implementations behind the same interface:
+        +--> JavaExecutor          in-process (JavaCompiler + ClassLoader)
+        +--> GraalPyExecutor       in-process (Polyglot Context, python)
+        +--> GraalJSExecutor       in-process (Polyglot Context, js)
+        +--> TruffleRubyExecutor   in-process (Polyglot Context, ruby)
+        +--> CExecutor             out-of-process (gcc/clang)
+        +--> CppExecutor           out-of-process (g++/clang++)
+        +--> RustExecutor          out-of-process (rustc)
+        +--> GoExecutor            out-of-process (go build)
+        +--> RExecutor             out-of-process (Rscript)
 ```
 
-### 4.2 The adapter contract
+### 4.2 The adapter contract (implemented)
 
-Every adapter implements the same small interface, so the service layer is language-agnostic:
+Every executor implements the same interface, so the service layer is language-agnostic:
 
 ```java
-public interface LanguageExecutionAdapter {
-    String languageId();                       // "java", "python", "c", ...
-    boolean isAvailable();                     // toolchain/dependency present?
+public interface CodeExecutor {
+    Language language();                        // enum constant, unique per executor
+    boolean isAvailable();                      // is the runtime/toolchain usable here?
     ExecutionResult execute(ExecutionRequest request);
 }
 ```
 
-Shared request fields (proposed):
+Executors are discovered by Spring and indexed by language; a second executor for the same
+language fails application startup rather than silently winning. Request body:
+
+| Field | Rule |
+|---|---|
+| `language` | Required, at most 32 characters, one of the nine ids, case-insensitive after trim. |
+| `code` | Required, non-blank, at most 100,000 characters. |
+| `input` | Optional, at most 10,000 characters; null is treated as empty. |
+
+Response body (null fields are serialised so the shape stays stable):
 
 | Field | Purpose |
 |---|---|
-| `language` | Adapter selection key; unknown values are rejected, never defaulted. |
-| `source` | Program text, size-limited before it reaches any adapter. |
-| `stdin` | Optional program input, size-limited. |
-| `timeoutMillis` | Requested limit, clamped to a server-side maximum. |
-| `memoryLimitMb` | Requested limit, clamped to a server-side maximum. |
+| `success` | Whether the program ran and exited successfully. |
+| `language` | Echo of the resolved language id. |
+| `output` | Captured program output (currently never produced, because no executor exists). |
+| `error` | Failure message, or `null` on success. |
+| `executionTimeMs` | Execution duration reported by the executor. |
 
-Shared result fields (proposed):
-
-| Field | Purpose |
-|---|---|
-| `status` | `SUCCESS`, `COMPILE_ERROR`, `RUNTIME_ERROR`, `TIMEOUT`, `MEMORY_EXCEEDED`, `UNAVAILABLE`. |
-| `stdout` / `stderr` | Captured output, truncated to a fixed byte cap. |
-| `exitCode` | Process exit code, or a synthetic code for in-process failures. |
-| `durationMillis` | Wall-clock execution time. |
-| `diagnostics` | Optional structured compiler messages. |
-
-`UNAVAILABLE` is the important status: when a compiler or language artifact is missing, the API
-reports the runtime as unavailable instead of failing obscurely.
+Current status codes: `400` for an unknown language, blank field, size violation or malformed
+JSON; `501` when a known language has no available executor; `500` for an unexpected server
+failure with a generic body that leaks no stack trace. The important property is that a missing
+engine produces an honest `501`, never fabricated output.
 
 ### 4.3 Two adapter families
 
@@ -310,18 +325,23 @@ reports the runtime as unavailable instead of failing obscurely.
 
 ### 4.4 Shared execution policy layer
 
-Timeouts, output caps, source-size caps and concurrency limits belong in `ExecutionService`, not
-in individual adapters, so they cannot be forgotten when a new adapter is added. The policy layer
-also owns the mapping from internal failures to the `status` enum, keeping error messages free of
-host paths and stack traces.
+**Implemented:** source and input size caps at the API boundary, language allow-listing, one JSON
+error shape, and fail-closed routing.
+
+**Not implemented:** timeouts, output caps, memory limits and concurrency limits. These belong in
+`ExecutionService` or a dedicated policy layer rather than in each executor, so they cannot be
+forgotten when a language is added. Error mapping must also stay free of host paths and stack
+traces. The executor contract notes that timeout enforcement is the implementation's
+responsibility today, which is a known gap to close before any executor ships.
 
 ### 4.5 Current state
 
-None of the classes in this section exist at the baseline commit. This branch has no backend
-source at all (`backend/` holds only `.gitkeep`); on `main`, the backend is a Spring Boot skeleton
-whose only application endpoint is a health check. Neither branch has an `ExecutionController`,
-`ExecutionService`, `LanguageAdapterRegistry` or adapter implementation. Section 4 is therefore a
-**design proposal** for the next development phase, not a description of current code.
+Day 9 implements `ExecutionController`, `ExecutionService`, the `CodeExecutor` interface, the
+`Language` enum, request/response/error DTOs, `GlobalExceptionHandler` and their tests. No
+executor implementation exists, so `/api/execute` returns `501` for every valid request. The
+class-name sketch in section 4.1 is therefore partly real (controller, service, interface) and
+partly planned (the nine executors), and the isolation controls in section 6 are entirely
+unimplemented.
 
 ---
 
@@ -377,8 +397,8 @@ Consequences:
 ## 6. Security Considerations
 
 Running untrusted code is the highest-risk feature in PolyglotMesh. The controls below are
-**requirements for any future implementation**. At the baseline commit none of them is
-implemented, because no execution path exists.
+**requirements for any future implementation**. None of them is implemented today: the endpoint
+rejects every request with `501` before any guest code could run.
 
 ### 6.1 Execution timeout
 
@@ -508,7 +528,7 @@ Until this suite exists and passes, no language may be marked **Tested** in this
 ## Appendix A - Verification Notes
 
 This document was written against the repository, not against the project plan alone. The
-following evidence was inspected at commit `3067ae0` on branch `leelavardhini-dev`:
+following evidence was inspected at commit `d58177a` on branch `leelavardhini-dev`:
 
 | Evidence | Location | Finding |
 |---|---|---|
@@ -517,8 +537,9 @@ following evidence was inspected at commit `3067ae0` on branch `leelavardhini-de
 | Frontend status | `frontend/README.md` | Java/Python/JavaScript backends marked "planned"; six languages "Not integrated - editor only"; Run/Save/Share disabled. |
 | Project status | `README.md` | "Code execution is not implemented yet"; only Java, Python and JavaScript are execution targets. |
 | Environment | `docs/DEVELOPMENT_SETUP.md` | GraalVM JDK present, language runtimes absent, no C/C++/Rust/Go/R toolchain verified. |
-| Backend scope | `backend/README.md` (on `main`) | Health endpoint only; "No code execution of any kind"; polyglot dependency not wired. |
-| Source search | frontend and backend sources | No adapter, registry, execution service, `/api/execute` or polyglot dependency. |
+| Backend scope | `backend/README.md` | Day 9 API scaffold; `/api/execute` returns `501`; "no execution logic on Day 9"; polyglot dependency not wired. |
+| API scaffold | `backend/src/main/java/com/polyglotmesh/` | `ExecutionController`, `ExecutionService`, `CodeExecutor`, `Language` and DTOs exist; no implementation of `CodeExecutor`. |
+| Source search | frontend and backend sources | No `CodeExecutor` implementation, compiler invocation, polyglot dependency or runtime test. |
 
 ## Appendix B - What this document does not claim
 
