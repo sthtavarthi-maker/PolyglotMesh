@@ -60,10 +60,82 @@ The service listens on **http://localhost:8080**.
 | Method | Path | Purpose | Response |
 |---|---|---|---|
 | GET | `/api/health` | Application health for the frontend and smoke tests | `{"status":"UP","application":"PolyglotMesh"}` |
+| POST | `/api/execute` | Unified execution endpoint (architecture only on Day 9) | `501` until an engine is registered; `400` for invalid input |
 | GET | `/actuator/health` | Actuator liveness/readiness | `{"status":"UP"}` |
 | GET | `/actuator/info` | Application metadata | build/app info |
 
 Only `health` and `info` actuator endpoints are exposed; health details are hidden.
+
+## Execution API
+
+`POST /api/execute` accepts:
+
+```json
+{
+  "language": "javascript",
+  "code": "console.log('Hello PolyglotMesh')",
+  "input": ""
+}
+```
+
+The intended success shape is:
+
+```json
+{
+  "success": true,
+  "language": "javascript",
+  "output": "Hello PolyglotMesh",
+  "error": null,
+  "executionTimeMs": 15
+}
+```
+
+Validation limits (enforced before any executor is reached):
+
+| Field | Rule |
+|---|---|
+| `language` | required, at most 32 characters; one of the nine known ids, case-insensitive |
+| `code` | required, at most 100,000 characters |
+| `input` | optional, at most 10,000 characters; null is treated as empty |
+
+Current behaviour and status codes:
+
+| Situation | Status | Body |
+|---|---|---|
+| Valid request, no engine for that language | `501 Not Implemented` | `ApiError` explaining that no engine is available yet |
+| Unknown language id | `400 Bad Request` | `ApiError` listing the known ids |
+| Blank/missing/oversized field | `400 Bad Request` | `ApiError` with the failing field(s) |
+| Malformed or missing JSON | `400 Bad Request` | `ApiError` |
+| Unexpected server failure | `500 Internal Server Error` | generic `ApiError`, details only in logs |
+
+There is deliberately **no execution logic on Day 9**. The endpoint validates,
+resolves the language and routes to a `CodeExecutor`; because none is registered
+yet, every valid request gets an honest `501` instead of invented output. As of
+Day 9 no language — including JavaScript, Python and Java — is executable. Ruby,
+C, C++, Rust, Go and R stay editor-only until adapters exist and are tested.
+
+## Architecture
+
+```
+HTTP -> ExecutionController   (validation, status codes)
+          |
+          v
+        ExecutionService      (language resolution, executor routing)
+          |
+          v
+        CodeExecutor          (interface; one bean per language, none yet)
+          |
+          v
+        ExecutionResult       (internal) -> ExecutionResponse (API)
+```
+
+- `ExecutionRequest` / `ExecutionResponse` / `ApiError` are the API contract.
+- `ExecutionResult` stays internal so adapters can evolve without breaking clients.
+- Executors are injected as a list and indexed by `Language`; adding a language
+  is a new bean, not a change to the controller or service. `isAvailable()` lets
+  an adapter fail closed when its runtime or toolchain is missing.
+- `GlobalExceptionHandler` gives every error one JSON shape and hides stack
+  traces and internal messages on `500`.
 
 ## Configuration
 
@@ -87,11 +159,18 @@ deployed origin to the property when there is a real need.
 | `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health` on a real random port |
 | `HealthControllerTest` | Web slice: JSON body, content type, unknown API path |
 | `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
+| `ExecutionRequestValidationTest` | Required fields, blank values, size limits, optional input |
+| `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping |
+| `ExecutionControllerTest` | 501 without engines, 400 for invalid/blank/unknown/malformed requests, 405 |
+| `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details |
 
-## What Day 8 does not do
+## Current limitations
 
-- No code execution of any kind. `/api/execute` arrives on Day 9–14.
+- No execution engine is registered yet, so `/api/execute` answers `501` for all
+  nine languages. This is not simulated execution.
 - No GraalVM dependency or runtime is wired yet (Day 10).
 - No authentication, database or persistence.
 - No claim of sandbox security: execution isolation is designed in later days and
   is not production-strength merely because a process or `Context` exists.
+- Limits enforced today are request-size and routing checks at the API boundary;
+  CPU/memory limits belong to the executors and their isolation layer.
