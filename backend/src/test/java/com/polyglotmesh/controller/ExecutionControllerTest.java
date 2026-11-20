@@ -15,8 +15,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * Exercises the real controller and service, with no executors registered —
- * exactly the Day 9 state of the application.
+ * Exercises the real controller and service with no executor beans in this
+ * web slice, so every known language still answers 501.
  */
 @WebMvcTest(ExecutionController.class)
 @Import({ExecutionService.class, GlobalExceptionHandler.class})

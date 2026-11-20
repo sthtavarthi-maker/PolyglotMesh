@@ -32,4 +32,9 @@ public record ExecutionResult(
     public static ExecutionResult failure(String error, long executionTimeMs) {
         return new ExecutionResult(false, "", error, executionTimeMs);
     }
+
+    /** Failure that still returns whatever the program printed before it stopped. */
+    public static ExecutionResult failure(String output, String error, long executionTimeMs) {
+        return new ExecutionResult(false, output, error, executionTimeMs);
+    }
 }
