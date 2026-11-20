@@ -6,17 +6,18 @@ implements today.
 
 - **Repository:** `https://github.com/sthtavarthi-maker/PolyglotMesh`
 - **Documented branch:** `leelavardhini-dev`
-- **Baseline commit:** `d58177a` ("Day 9: Establish backend architecture"), merged into this branch
-- **Last reviewed:** 19 November 2026
+- **Baseline commit:** `9565065` ("Day 10: Integrate GraalVM and execute JavaScript"), merged into
+  this branch
+- **Last reviewed:** 20 November 2026
 - **Scope:** language runtimes, execution adapters, host toolchain requirements and sandbox
   controls. No application code is changed by this document.
 
-> **Read this first.** PolyglotMesh currently has **no working code execution**. Nine languages
-> are available as editor modes only. Day 9 added the unified execution API and the adapter
-> contract, but no adapter is registered, so `POST /api/execute` answers `501 Not Implemented`
-> for every language. Nothing executes end to end, and no runtime has been tested. Sections that
-> describe adapters, isolation or security controls are **design intent**, not descriptions of
-> shipped behaviour.
+> **Read this first.** As of Day 10, **JavaScript executes end to end** through
+> `POST /api/execute` on GraalJS, inside a locked-down Polyglot context with a 5-second timeout and
+> output/error caps. The other **eight languages still return `501 Not Implemented`** because no
+> adapter exists for them. There is no hard CPU/memory quota and no container or process
+> isolation for the in-process engine, so the sandbox is defence in depth rather than a hardened
+> boundary. Editor-only languages must not be described as runnable.
 
 ---
 
@@ -57,22 +58,24 @@ Because these two groups have different trust models, PolyglotMesh routes them t
 | **Implemented** | Runtime dependency and adapter code exist and can execute a program. |
 | **Tested** | Execution has been verified by a recorded automated or manual test. |
 
-The repository currently reaches **Configured** for all nine editor modes and **Planned** for all
-nine execution runtimes. **No language is Implemented or Tested.**
+The repository currently reaches **Configured** for all nine editor modes, **Implemented and
+Tested** for the JavaScript runtime, and **Planned** for the other eight execution runtimes.
+JavaScript is the only language that may be described as executable.
 
 ---
 
 ## 2. Language Runtime Compatibility Matrix
 
-Execution Method and Integration Type describe the **intended** design. Implementation Status
-describes the **current** state of the repository at the baseline commit. Since Day 9 the unified
-endpoint exists, but with no registered executor it returns `501` for all nine languages.
+Execution Method and Integration Type describe the intended design. Implementation Status
+describes the **current** state of the repository at the baseline commit. Since Day 10,
+JavaScript executes on GraalJS; the remaining eight languages have no executor and return
+`501`.
 
 | Programming Language | Runtime / Compiler | Execution Method | Integration Type | Implementation Status |
 |---|---|---|---|---|
 | Java | GraalVM JDK 21 / `javax.tools.JavaCompiler` | In-process compile, then load and invoke in an isolated class loader | In-process (JVM) | Editor **Configured**; runtime **Planned** - no `CodeExecutor` implementation exists |
 | Python | GraalPy (GraalVM Python) | In-process `Context.eval("python", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - GraalPy is named in docs, no dependency wired |
-| JavaScript | GraalJS (GraalVM JavaScript) | In-process `Context.eval("js", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - GraalJS is named in docs, no dependency wired |
+| JavaScript | GraalJS 23.1.12 (`js-community`) | In-process `Context.eval("js", source)` in a locked-down context | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Implemented** and **Tested** (Day 10) |
 | Ruby | TruffleRuby | In-process `Context.eval("ruby", source)` | In-process (Truffle / Polyglot API) | Editor **Configured**; runtime **Planned** - TruffleRuby is not referenced anywhere in the repository |
 | C | GCC (`gcc`) or Clang (`clang`) | Compile to a temporary executable, run it as a restricted child process | Out-of-process (native toolchain) | Editor **Configured**; runtime **Planned** - no compiler invocation exists |
 | C++ | G++ (`g++`) or Clang++ (`clang++`) | Compile to a temporary executable, run it as a restricted child process | Out-of-process (native toolchain) | Editor **Configured**; runtime **Planned** - no compiler invocation exists |
@@ -100,39 +103,49 @@ truth for editor modes:
 The type definition in `frontend/src/types/language.ts` states the limitation directly: the
 `runtime` field is "a description of the execution target, not proof that execution works".
 `frontend/README.md` repeats that Run, Save and Share remain disabled for all nine languages.
+Day 10 added a working backend runtime but did not connect the frontend, so the workspace UI still
+disables Run; JavaScript is reachable through the REST API, not through the browser yet.
 
 For Ruby, C, C++, Rust, Go and R, the runtime label is `null`, so even the *intended* engine is
-not recorded in the application. The engines in the matrix above come from the project plan
-(README, roadmap) and this design document, not from code.
+not recorded in the application. JavaScript is the exception: its engine is declared in
+`backend/pom.xml`, implemented in `JavaScriptExecutor`, and exercised by automated tests. The
+other eight engines in the matrix come from the project plan and this design document, not from
+working code.
 
 ### 2.2 What exists and what is absent
 
-Day 9 establishes the execution **API skeleton**, not execution itself:
+Day 10 makes **JavaScript** executable through the Day 9 API:
 
-- `POST /api/execute` exists and validates `language`, `code` (100,000 character cap) and
-  `input` (10,000 character cap);
-- `ExecutionService` resolves the language against a nine-value `Language` enum and routes to a
-  `CodeExecutor` bean;
-- no `CodeExecutor` implementation is registered, so every valid request fails closed with
-  `501 Not Implemented` instead of returning invented output;
-- JSON error responses are centralised in `GlobalExceptionHandler`.
+- `backend/pom.xml` declares `org.graalvm.polyglot:polyglot` and `js-community` at version
+  23.1.12;
+- `JavaScriptExecutor` is the first `CodeExecutor` bean and reports availability from the engine,
+  not from configuration;
+- `GraalVmSandbox` creates a fresh context per run with host access, host class lookup/loading,
+  IO, thread creation, process creation, native access and environment access all denied;
+- a 5-second wall-clock timeout cancels runaway programs, and output/error text is capped at
+  100,000 and 20,000 characters;
+- `readLine()` and `readAll()` expose standard input to JavaScript programs;
+- the test suite includes real GraalJS runs and an end-to-end `/api/execute` test.
 
 Still absent:
 
-- no GraalVM Polyglot dependency (`org.graalvm.polyglot`) in any build file;
-- no compiler or interpreter invocation code;
-- no timeout, memory, process or filesystem enforcement;
-- no test that executes a real language runtime.
+- executors for Python, Ruby, Java, C, C++, Rust, Go and R, which all answer `501`;
+- GraalPy and TruffleRuby artifacts;
+- a hard per-request CPU or memory quota;
+- container or OS-level process isolation;
+- frontend integration, so the browser workspace still has Run disabled.
 
-The backend is a Spring Boot skeleton whose only working endpoints are `/api/health`,
-`/actuator/health` and `/actuator/info`; `/api/execute` is wired but unimplemented.
+The backend now genuinely executes one language. It is not a general sandbox: the JavaScript
+engine runs inside the backend JVM, and the timeout is cooperative cancellation rather than a
+resource guarantee.
 
 ---
 
 ## 3. Runtime Technologies
 
 This section explains the engine chosen for each language and the constraints that come with it.
-None of these engines is bundled with the current installation.
+GraalJS is now bundled as a project dependency and is the only runtime that executes. The other
+eight engines are not installed or wired.
 
 ### 3.1 Java - JavaCompiler API on GraalVM JDK 21
 
@@ -161,25 +174,30 @@ Polyglot API (`Context.eval("python", ...)`).
   `PATH`; `docs/DEVELOPMENT_SETUP.md` explains that language artifacts are added per project as
   Maven dependencies. That wiring does not exist yet.
 
-### 3.3 JavaScript - GraalJS
+### 3.3 JavaScript - GraalJS (implemented)
 
-GraalJS is the GraalVM JavaScript engine, also embedded through the Polyglot API
+GraalJS is the GraalVM JavaScript engine, embedded through the Polyglot API
 (`Context.eval("js", ...)`).
 
-- **Why it fits:** ECMAScript execution with no Node.js process, no npm install and no browser
-  dependency on the server.
-- **Repository evidence:** labelled `GraalVM Polyglot` in the language metadata and "GraalJS
-  (planned)" in the frontend README.
-- **Caveat:** GraalJS is not guaranteed to be present in a stock GraalVM distribution; it must be
-  added as an explicit dependency, and host access must be disabled.
+- **Repository evidence:** `org.graalvm.polyglot:js-community:23.1.12` is a runtime dependency;
+  `JavaScriptExecutor` is a registered `CodeExecutor`; `GraalVmSandbox` executes real programs;
+  `JavaScriptExecutionIntegrationTest` proves `/api/execute` returns program output.
+- **Sandbox settings:** `HostAccess.NONE`, host class lookup and loading disabled, `IOAccess.NONE`,
+  no new threads, no processes, no native access, no environment access, fresh `Context` per run.
+- **Limits:** 5-second wall-clock timeout (configurable), 100,000-character output cap and
+  20,000-character error cap.
+- **Caveat:** on a stock JDK 21 (the development machine's default) GraalJS runs in Truffle's
+  fallback interpreter mode without runtime compilation. Starting the jar on the GraalVM JDK
+  enables compilation. Startup also pays a one-off engine initialisation cost.
 
 ### 3.4 Ruby - TruffleRuby
 
 TruffleRuby is the GraalVM Ruby implementation and would be embedded the same way
 (`Context.eval("ruby", ...)`).
 
-- **Status:** the least-defined integration. TruffleRuby is **not mentioned** in the repository's
-  code, README or setup documentation; Ruby is currently editor-only with a `null` runtime label.
+- **Status:** the least-defined integration. TruffleRuby is **not referenced** by the application
+  code, backend configuration or build files; Ruby is currently editor-only with a `null` runtime
+  label.
 - **Caveat:** embedding TruffleRuby from Maven is more involved than GraalJS or GraalPy, and
   gem availability is limited compared with CRuby. Choosing between embedded TruffleRuby and an
   out-of-process CRuby is an open decision.
@@ -236,13 +254,13 @@ R is interpreted with `Rscript` in a restricted child process.
 ## 4. Execution Architecture
 
 The architecture separates **one public contract** from **many independent adapters**. The goal
-is that adding a language never changes the HTTP layer or the frontend. Day 9 implements the
-contract, validation and routing; the executors themselves remain future work.
+is that adding a language never changes the HTTP layer or the frontend. Day 9 built the contract,
+validation and routing; Day 10 added the first working executor.
 
-### 4.1 Request flow (implemented to the executor boundary)
+### 4.1 Request flow (JavaScript is live)
 
 ```text
-Browser (React workspace)
+Browser (React workspace, not yet connected)
         |
         | POST /api/execute  { language, code, input }
         v
@@ -252,14 +270,16 @@ ExecutionController            (HTTP validation, status codes)
 ExecutionService               (Language.fromId, executor routing)
         |
         v
-CodeExecutor (interface)       (no implementation registered on Day 9)
+CodeExecutor (interface)
         |
-        X  501 Not Implemented  (fail closed, never invented output)
+        +--> JavaScriptExecutor (registered) --> GraalVmSandbox --> GraalJS
+        |                                        fresh Context, 5 s timeout
+        |
+        +--> no other executor -----------------> 501 Not Implemented
 
 Planned implementations behind the same interface:
         +--> JavaExecutor          in-process (JavaCompiler + ClassLoader)
         +--> GraalPyExecutor       in-process (Polyglot Context, python)
-        +--> GraalJSExecutor       in-process (Polyglot Context, js)
         +--> TruffleRubyExecutor   in-process (Polyglot Context, ruby)
         +--> CExecutor             out-of-process (gcc/clang)
         +--> CppExecutor           out-of-process (g++/clang++)
@@ -295,24 +315,29 @@ Response body (null fields are serialised so the shape stays stable):
 |---|---|
 | `success` | Whether the program ran and exited successfully. |
 | `language` | Echo of the resolved language id. |
-| `output` | Captured program output (currently never produced, because no executor exists). |
+| `output` | Captured stdout/stderr; produced for JavaScript since Day 10. |
 | `error` | Failure message, or `null` on success. |
 | `executionTimeMs` | Execution duration reported by the executor. |
 
-Current status codes: `400` for an unknown language, blank field, size violation or malformed
-JSON; `501` when a known language has no available executor; `500` for an unexpected server
-failure with a generic body that leaks no stack trace. The important property is that a missing
-engine produces an honest `501`, never fabricated output.
+Current status codes: `200` for a JavaScript request, including programs that fail with a syntax
+or runtime error (`success` is then false); `400` for an unknown language, blank field, size
+violation or malformed JSON; `501` when a known language has no available executor; `500` for an
+unexpected server failure with a generic body that leaks no stack trace. A missing engine produces
+an honest `501`, never fabricated output.
 
 ### 4.3 Two adapter families
 
-**In-process adapters (Java, Python, JavaScript, Ruby)**
+**In-process adapters (JavaScript today; Java, Python and Ruby planned)**
 
-- Use the GraalVM Polyglot API with `allowAllAccess(false)`, host access disabled and IO disabled.
-- Each run gets a fresh `Context` (or a fresh class loader for Java), never a shared mutable one.
-- Cancellation uses the Polyglot `Context` close mechanism plus a watchdog timeout.
-- The JVM's own heap and the GraalVM isolate are shared with the backend, so memory limits are
-  advisory at best. Hard isolation requires a separate worker JVM or process.
+- **Implemented for JavaScript:** a shared, lazily created GraalVM `Engine`; a fresh `Context` per
+  request; `HostAccess.NONE`; host class lookup and loading disabled; `IOAccess.NONE`; environment,
+  thread, process and native access all disabled; stdout/stderr captured in memory.
+- A watchdog submits evaluation to a daemon worker and cancels via `Context.close(true)` when the
+  wall-clock deadline expires.
+- **Still advisory:** the JVM heap is shared with the backend, so there is no hard memory cap.
+  Hard isolation requires a separate worker JVM, process or container.
+- Java is planned with the JDK compiler and an isolated class loader; Python and Ruby would reuse
+  this sandbox once their language artifacts are added.
 
 **Out-of-process adapters (C, C++, Rust, Go, R)**
 
@@ -326,22 +351,21 @@ engine produces an honest `501`, never fabricated output.
 ### 4.4 Shared execution policy layer
 
 **Implemented:** source and input size caps at the API boundary, language allow-listing, one JSON
-error shape, and fail-closed routing.
+error shape, fail-closed routing, a 5-second execution timeout and output/error caps. These limits
+are configured in `application.properties` and enforced for JavaScript.
 
-**Not implemented:** timeouts, output caps, memory limits and concurrency limits. These belong in
-`ExecutionService` or a dedicated policy layer rather than in each executor, so they cannot be
-forgotten when a language is added. Error mapping must also stay free of host paths and stack
-traces. The executor contract notes that timeout enforcement is the implementation's
-responsibility today, which is a known gap to close before any executor ships.
+**Not implemented:** hard memory limits, CPU quotas and concurrency limits. These need a worker
+JVM, cgroup or container boundary, not just an in-process setting. Timeout enforcement is also
+per-executor today rather than centralised, so it must be re-checked when each new adapter lands.
+Error mapping already avoids leaking host paths and stack traces.
 
 ### 4.5 Current state
 
-Day 9 implements `ExecutionController`, `ExecutionService`, the `CodeExecutor` interface, the
-`Language` enum, request/response/error DTOs, `GlobalExceptionHandler` and their tests. No
-executor implementation exists, so `/api/execute` returns `501` for every valid request. The
-class-name sketch in section 4.1 is therefore partly real (controller, service, interface) and
-partly planned (the nine executors), and the isolation controls in section 6 are entirely
-unimplemented.
+Day 10 implements the full path for JavaScript: `JavaScriptExecutor` ->
+`GraalVmSandbox` -> `GraalVmEngine` -> GraalJS, with a locked-down context, timeout and output
+caps. The API returns real program output for `javascript` and `501` for the other eight
+languages. Java, Python, Ruby and the native toolchains remain adapters to be written, and the
+isolation controls in section 6 are only partially implemented.
 
 ---
 
@@ -353,17 +377,17 @@ or inside the execution image.
 
 ### 5.1 Requirements per language
 
-| Language | Required component | Minimum expectation | Where it runs |
-|---|---|---|---|
-| Java | GraalVM for JDK 21 (includes `javac`/JavaCompiler) | JDK 21+; project baseline is 21.0.12 | Backend JVM |
-| Python | GraalPy language artifact | Version matching the GraalVM release line | Backend JVM |
-| JavaScript | GraalJS language artifact | Version matching the GraalVM release line | Backend JVM |
-| Ruby | TruffleRuby artifact (or CRuby, if the design changes) | Version decision still open | Backend JVM (or child process) |
-| C | `gcc` or `clang` | C11 or later | Child process |
-| C++ | `g++` or `clang++` | C++17 or later | Child process |
-| Rust | `rustc` | Current stable, edition 2021 | Child process |
-| Go | `go` | Go 1.21 or later | Child process |
-| R | `Rscript` | R 4.x | Child process |
+| Language | Required component | Minimum expectation | Where it runs | Status |
+|---|---|---|---|---|
+| Java | GraalVM for JDK 21 (includes `javac`/JavaCompiler) | JDK 21+; project baseline is 21.0.12 | Backend JVM | Planned |
+| Python | GraalPy language artifact | Version matching the GraalVM release line | Backend JVM | Planned |
+| JavaScript | GraalJS `js-community` artifact | 23.1.12 (declared in `pom.xml`) | Backend JVM | **Bundled and tested** |
+| Ruby | TruffleRuby artifact (or CRuby, if the design changes) | Version decision still open | Backend JVM (or child process) | Planned |
+| C | `gcc` or `clang` | C11 or later | Child process | Planned |
+| C++ | `g++` or `clang++` | C++17 or later | Child process | Planned |
+| Rust | `rustc` | Current stable, edition 2021 | Child process | Planned |
+| Go | `go` | Go 1.21 or later | Child process | Planned |
+| R | `Rscript` | R 4.x | Child process | Planned |
 
 ### 5.2 Environment notes from the repository
 
@@ -372,10 +396,13 @@ local versions. Relevant points:
 
 - Oracle GraalVM 21.0.12+7.1 is installed but **not on `PATH`**, and `GRAALVM_HOME` is unset.
 - The default `java` on `PATH` is JDK 17, not JDK 21.
-- The installed GraalVM is a **JDK-level** install. It does not bundle the JavaScript, Python or
-  Ruby language runtimes; those are expected to arrive as project dependencies.
+- The installed GraalVM is a **JDK-level** install. It does not itself bundle the JavaScript,
+  Python or Ruby language runtimes; GraalJS now arrives as a Maven dependency, while GraalPy and
+  TruffleRuby are still absent.
 - Only Java, Maven, Node.js, npm and Git were verified. **No C, C++, Rust, Go or R toolchain was
   verified**, so the native-language group has no environment evidence at all.
+- The Day 10 suite ran on Java 21.0.12 and passed (54 tests), which verifies the GraalJS artifact
+  on this machine but does not replace a deployment-image check.
 
 Consequences:
 
@@ -397,84 +424,87 @@ Consequences:
 ## 6. Security Considerations
 
 Running untrusted code is the highest-risk feature in PolyglotMesh. The controls below are
-**requirements for any future implementation**. None of them is implemented today: the endpoint
-rejects every request with `501` before any guest code could run.
+**partially implemented for JavaScript** and remain requirements for the other eight languages.
+The in-process JavaScript sandbox is defence in depth, not a hardened isolation boundary.
 
 ### 6.1 Execution timeout
 
-- Every request gets a wall-clock deadline enforced by the service layer, not by the submitted
-  program.
-- The deadline covers **compile and run** for native languages; a compile step that never finishes
-  is as harmful as a runaway program.
-- In-process runs must be cancellable; an interrupt alone is insufficient for tight loops, so a
-  watchdog must close the `Context` or terminate the worker.
-- Suggested starting values: 1-2 s compile allowance for C/C++, 5 s run allowance, hard server
-  maximum of 10 s. Values are policy, not constants in adapter code.
+- **Implemented for JavaScript:** a 5-second wall-clock deadline per request (configurable via
+  `polyglotmesh.graalvm.execution-timeout`). Evaluation runs on a daemon worker; expiry closes the
+  `Context` with cancellation and returns a timeout error. A tight loop is interrupted this way.
+- **Still required:** the deadline for native languages must also cover compilation, and a hard
+  server maximum should clamp any client-supplied value. Timeout enforcement currently lives in
+  the executor rather than a central policy layer.
 
 ### 6.2 Memory restrictions
 
 - Native child processes should be started with an address-space or cgroup limit; exceeding it
   must yield `MEMORY_EXCEEDED`, not a host OOM kill.
-- JVM-embedded execution is the weak point: GraalVM contexts share the backend heap. A memory cap
-  inside one JVM is advisory. Real isolation requires a dedicated worker JVM or process with
-  `-Xmx` set, or a container-level limit.
-- Compiler memory counts. C++ and Rust compilation can consume far more memory than the resulting
-  program, so compile and run phases need separate limits.
-- Output must be capped independently (for example 64 KiB per stream) to prevent memory
-  exhaustion through printing.
+- **Not implemented:** there is no hard per-request memory cap. GraalJS runs inside the backend
+  JVM and shares its heap, so a memory cap inside that JVM is advisory. Real isolation requires a
+  worker JVM or process with `-Xmx` set, or a container limit.
+- **Implemented:** stdout/stderr are capped at 100,000 characters and error text at 20,000, which
+  bounds the most common memory-exhaustion path (printing in a loop).
+- **Still required:** compiler memory counts for C++ and Rust, so compile and run phases need
+  separate limits once native adapters exist.
 
 ### 6.3 Filesystem restrictions
 
-- Each run gets a fresh temporary directory and may read/write only inside it.
-- Adapters must never join user-supplied paths; file names are generated by the server.
-- In-process languages must run with IO access disabled in the Polyglot context, so the guest
-  cannot open host files.
-- The backend, its configuration and its credentials must not be reachable from the execution
-  directory. Temporary workspaces must live outside the application tree.
+- **Implemented for JavaScript:** `IOAccess.NONE` denies guest file IO, so a program cannot open
+  host files through the context.
+- **Still required for native languages:** each run needs a fresh temporary directory, generated
+  file names (never user-supplied paths), and a workspace outside the application tree.
+- The backend, its configuration and its credentials must not be reachable from any execution
+  directory.
 - Symlink traversal must be considered when cleaning up or when passing paths to a compiler.
 
 ### 6.4 Process isolation
 
-- Native languages run in a separate process, ideally under a dedicated low-privilege OS user.
-- The process must not inherit the backend's environment variables, file descriptors or working
-  directory.
-- Argument vectors are used directly; user input is never interpolated into a shell command.
-- A process-group kill is required so that compiler or program child processes do not survive a
-  timeout.
+- **JavaScript is not process-isolated.** It runs inside the backend JVM; the context denies
+  host access, IO, threads, processes, native access and environment access, but a JVM-level
+  escape is not contained by this design.
+- **Native languages must run in a separate process**, ideally under a dedicated low-privilege OS
+  user, without inheriting the backend's environment, file descriptors or working directory.
+- Arguments must be passed as an argument vector; user input is never interpolated into a shell
+  command, and a process-group kill is required so children do not survive a timeout.
 - Container-level isolation (separate namespace, read-only root filesystem, dropped capabilities)
-  is preferred over relying on OS flags alone. Process isolation is **not** equivalent to a
-  security boundary unless it is configured as one.
+  is preferred over OS flags alone. Process isolation is **not** a security boundary unless it is
+  configured as one.
 
 ### 6.5 Network restrictions
 
-- Executed programs must have no outbound network access by default.
-- This must be enforced at the sandbox/container level. Language-level bans (for example removing
-  a socket API) are bypassable and are not a control.
-- Package managers (`pip`, `gem`, `cargo`, `go get`) must not be reachable at run time; that also
-  protects reproducibility.
+- Guest programs must have no outbound network access by default.
+- **Partially covered for JavaScript:** the context exposes no host IO or process access, so guest
+  code has no supported route to a socket. This is not a network sandbox and must not be relied on
+  as one.
+- **Still required:** enforcement at the container or network-namespace level for every runtime,
+  including native child processes. Package managers (`pip`, `gem`, `cargo`, `go get`) must be
+  unreachable at run time.
 - The backend's own network access is separate and should not be exposed to guest code through
   loopback.
 
 ### 6.6 Temporary file cleanup
 
-- Workspaces are deleted in a `finally` block after every run, including compile failures,
-  timeouts and crashes.
-- A startup sweep removes orphaned workspaces older than a fixed age, covering process kills that
-  skip normal cleanup.
-- Cleanup failures are logged and alerted; silent accumulation is a disk-exhaustion path.
-- Compiled artefacts are not reused across users. Any cache must be keyed by content and scoped to
-  a single language and toolchain version.
+- **Not yet applicable to JavaScript:** it executes in memory and creates no temporary files.
+- **Required for native adapters:** delete each workspace in a `finally` block after every run,
+  including compile failures, timeouts and crashes.
+- Add a startup sweep for orphaned workspaces older than a fixed age, covering kills that skip
+  normal cleanup; log and alert on cleanup failures.
+- Compiled artefacts must not be reused across users. Any cache must be keyed by content and
+  scoped to one language and toolchain version.
 
 ### 6.7 Additional controls to design in from the start
 
-- **Concurrency limits** per user and globally, to prevent resource exhaustion through volume.
-- **Request size limits** on source and stdin, enforced before parsing.
-- **No secrets in the execution image**, and no backend credentials on the child process
-  environment.
-- **Audit logging** of language, duration, exit status and limit violations, without logging full
-  source by default.
-- **Fail closed**: an unknown language, missing toolchain or disabled runtime returns an error; it
-  never falls back to another adapter.
+- **Request size limits:** implemented at the API boundary (100,000-character source,
+  10,000-character input, 32-character language id).
+- **Fail closed:** implemented; an unknown language, missing engine or disabled runtime returns an
+  error and never falls back to another adapter.
+- **Concurrency limits** per user and globally: not implemented, and needed to prevent resource
+  exhaustion through volume.
+- **No secrets in the execution image**, and no backend credentials in the child process
+  environment: required before native execution ships.
+- **Audit logging** of language, duration, outcome and limit violations, without logging full
+  source by default: not implemented.
 
 ---
 
@@ -484,14 +514,15 @@ rejects every request with `501` before any guest code could run.
 
 The realistic sequence follows the project roadmap and the existing metadata:
 
-| Phase | Scope | Rationale |
+| Phase | Scope | Status |
 |---|---|---|
-| 1 | Unified execution API, adapter interface, policy layer | Everything else depends on the contract. |
-| 2 | JavaScript (GraalJS), then Python (GraalPy) | Lowest integration cost; artifacts are Maven dependencies; already named in project docs. |
-| 3 | Java (JavaCompiler + isolated class loader) | In-process, but needs a class-loader and isolation design. |
-| 4 | C and C++ (GCC/Clang, G++/Clang++) | First out-of-process adapters; establishes the native sandbox pattern. |
-| 5 | Rust, Go, R | Reuse the native pattern with per-toolchain specifics. |
-| 6 | Ruby (TruffleRuby or CRuby) | Engine choice still open; deliberately last. |
+| 1 | Unified execution API, adapter interface, routing | Done (Day 9) |
+| 2 | JavaScript (GraalJS), sandbox, timeout, output caps | **Done and tested (Day 10)** |
+| 3 | Python (GraalPy) using the same sandbox | Next; artifact not added yet |
+| 4 | Java (JavaCompiler + isolated class loader) | Planned; needs class-loader isolation |
+| 5 | C and C++ (GCC/Clang, G++/Clang++) | Planned; establishes the native sandbox pattern |
+| 6 | Rust, Go, R | Planned; reuse the native pattern |
+| 7 | Ruby (TruffleRuby or CRuby) | Planned; engine choice still open |
 
 Sequencing rule: a language is only exposed in the UI after its adapter passes the compatibility
 suite. Editor mode availability does not imply execution availability, and the UI must keep
@@ -513,7 +544,10 @@ A compatibility suite should verify behaviour, not just "it ran":
 - **Cross-language smoke test**: the same trivial algorithm implemented in all nine languages,
   asserting equivalent output.
 
-Until this suite exists and passes, no language may be marked **Tested** in this document.
+JavaScript is marked **Tested** because its suite covers successful execution, stdin, syntax and
+runtime errors, timeout cancellation, output truncation, host-access denial and context isolation,
+plus an end-to-end `/api/execute` test. The other eight remain untested; the cross-language suite
+and golden programs above are still future work.
 
 ### 7.3 Documentation follow-ups
 
@@ -528,26 +562,29 @@ Until this suite exists and passes, no language may be marked **Tested** in this
 ## Appendix A - Verification Notes
 
 This document was written against the repository, not against the project plan alone. The
-following evidence was inspected at commit `d58177a` on branch `leelavardhini-dev`:
+following evidence was inspected at commit `9565065` on branch `leelavardhini-dev`:
 
 | Evidence | Location | Finding |
 |---|---|---|
 | Language catalogue | `frontend/src/data/languages.ts` | Nine entries; `runtime` is non-null only for Java, Python and JavaScript; `null` for the other six. |
 | Type contract | `frontend/src/types/language.ts` | `runtime` explicitly documented as "not proof that execution works". |
 | Frontend status | `frontend/README.md` | Java/Python/JavaScript backends marked "planned"; six languages "Not integrated - editor only"; Run/Save/Share disabled. |
-| Project status | `README.md` | "Code execution is not implemented yet"; only Java, Python and JavaScript are execution targets. |
-| Environment | `docs/DEVELOPMENT_SETUP.md` | GraalVM JDK present, language runtimes absent, no C/C++/Rust/Go/R toolchain verified. |
-| Backend scope | `backend/README.md` | Day 9 API scaffold; `/api/execute` returns `501`; "no execution logic on Day 9"; polyglot dependency not wired. |
-| API scaffold | `backend/src/main/java/com/polyglotmesh/` | `ExecutionController`, `ExecutionService`, `CodeExecutor`, `Language` and DTOs exist; no implementation of `CodeExecutor`. |
-| Source search | frontend and backend sources | No `CodeExecutor` implementation, compiler invocation, polyglot dependency or runtime test. |
+| Project status | `README.md` | Still says execution is not implemented; predates Day 10, so that line is stale for JavaScript. |
+| Environment | `docs/DEVELOPMENT_SETUP.md` | GraalVM JDK present, no C/C++/Rust/Go/R toolchain verified. |
+| Backend scope | `backend/README.md` | Day 10: JavaScript executes; eight languages return `501`; only GraalJS is bundled. |
+| Runtime dependency | `backend/pom.xml` | `polyglot` and `js-community` 23.1.12 declared; no GraalPy or TruffleRuby artifact. |
+| JavaScript executor | `backend/src/main/java/.../executor/JavaScriptExecutor.java` | Registered `CodeExecutor`; availability taken from the engine. |
+| Sandbox | `backend/src/main/java/.../runtime/GraalVmSandbox.java` | Fresh context, host/IO/thread/process/native/environment access denied, timeout, output caps, stdin helpers. |
+| Tests | `backend/src/test/java/.../execution/JavaScriptExecutionIntegrationTest.java` and runtime tests | Real GraalJS execution through `/api/execute`; `mvn test` passed 54 tests, 0 failures. |
 
 ## Appendix B - What this document does not claim
 
-- It does not claim that any of the nine languages can be executed today.
-- It does not claim that the security controls in section 6 exist.
-- It does not claim that the architecture in section 4 is implemented.
-- It does not claim that TruffleRuby, GCC, Clang, `rustc`, Go or R is installed or verified on the
-  development machine.
+- It does not claim that any language other than JavaScript can be executed today.
+- It does not claim that CPU or memory quotas, process isolation, container isolation, network
+  namespaces or concurrency limits exist.
+- It does not claim that the native-language architecture in section 4 is implemented.
+- It does not claim that GraalPy, TruffleRuby, GCC, Clang, `rustc`, Go or R is installed or verified
+  on the development machine.
 
-Editor support for all nine languages is real and verified in the frontend. Execution support for
-all nine languages is future work.
+Editor support for all nine languages is real and verified in the frontend. Backend execution is
+real for JavaScript only; the other eight languages are future work.
