@@ -19,6 +19,8 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- GraalVM release line paired with the installed GraalVM for JDK 21. -->
+        <graalvm.version>23.1.12</graalvm.version>
     </properties>
 
     <dependencies>
@@ -33,6 +35,21 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>polyglot</artifactId>
+            <version>${graalvm.version}</version>
+        </dependency>
+
+        <!-- GraalJS (JavaScript). Added as a POM artifact so its language and
+             runtime jars come in as runtime dependencies. -->
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>js-community</artifactId>
+            <version>${graalvm.version}</version>
+            <type>pom</type>
         </dependency>
 
         <dependency>

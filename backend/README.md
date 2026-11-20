@@ -1,7 +1,8 @@
 # PolyglotMesh Backend
 
 Spring Boot service for PolyglotMesh, the GraalVM multi-language runtime sandbox.
-Week 2 builds this backend incrementally; Day 8 is the project skeleton only.
+Week 2 builds this backend incrementally. Day 10 embeds GraalVM and executes
+JavaScript for real; every other language answers `501` until its adapter exists.
 
 ## Stack
 
@@ -11,9 +12,13 @@ Week 2 builds this backend incrementally; Day 8 is the project skeleton only.
 | Spring Boot | 3.5.16 |
 | Build tool | Maven 3.9.16 |
 | Modules | Spring Web, Validation, Actuator |
+| GraalVM Polyglot API | 23.1.12 (`org.graalvm.polyglot:polyglot`) |
+| Embedded language | GraalJS 23.1.12 (`js-community`) |
+| Tests | JUnit 5, Mockito (via `spring-boot-starter-test`) |
 
-Week 2 will add the GraalVM Polyglot API (`org.graalvm.polyglot`), JUnit 5 and
-Mockito. JUnit 5 and Mockito already arrive through `spring-boot-starter-test`.
+Only GraalJS is bundled. GraalPy and TruffleRuby are **not** dependencies yet,
+so the engine reports Python and Ruby as unavailable rather than pretending to
+run them. C, C++, Rust, Go and R need external toolchains and stay editor-only.
 
 ## Local tool paths
 
@@ -60,7 +65,7 @@ The service listens on **http://localhost:8080**.
 | Method | Path | Purpose | Response |
 |---|---|---|---|
 | GET | `/api/health` | Application health for the frontend and smoke tests | `{"status":"UP","application":"PolyglotMesh"}` |
-| POST | `/api/execute` | Unified execution endpoint (architecture only on Day 9) | `501` until an engine is registered; `400` for invalid input |
+| POST | `/api/execute` | Unified execution endpoint | `200` with the execution result; `501` for a known language without an engine; `400` for invalid input |
 | GET | `/actuator/health` | Actuator liveness/readiness | `{"status":"UP"}` |
 | GET | `/actuator/info` | Application metadata | build/app info |
 
@@ -78,17 +83,45 @@ Only `health` and `info` actuator endpoints are exposed; health details are hidd
 }
 ```
 
-The intended success shape is:
+A successful execution returns:
 
 ```json
 {
   "success": true,
   "language": "javascript",
-  "output": "Hello PolyglotMesh",
+  "output": "Hello PolyglotMesh\n",
   "error": null,
   "executionTimeMs": 15
 }
 ```
+
+`output` is everything the program wrote to stdout and stderr, including its own
+newlines. `error` is `null` on success and carries the compile/runtime error
+otherwise; output produced before a failure is still returned.
+
+### JavaScript (executable)
+
+JavaScript runs on GraalJS inside the backend. The program has `console.log` and
+`console.error`, plus two helpers for standard input:
+
+| Helper | Behaviour |
+|---|---|
+| `readLine()` | Returns the next input line, or `null` when input is exhausted |
+| `readAll()` | Returns the remaining input lines joined with `\n` |
+
+```javascript
+const name = readLine();
+console.log(`Hello, ${name}!`);
+```
+
+Each request gets a fresh `Context`, so globals never leak between runs. The
+sandbox denies host access (`Java.type`, `Polyglot`), file and network IO, process
+creation, native access, thread creation and environment variables. A wall-clock
+timeout (default 5 s) cancels infinite loops, and output/error text is capped.
+
+`executionTimeMs` covers context creation and evaluation. The first request after
+startup also pays the one-off GraalVM engine start (a few seconds here), so the
+first measurement is larger than subsequent ones.
 
 Validation limits (enforced before any executor is reached):
 
@@ -102,17 +135,17 @@ Current behaviour and status codes:
 
 | Situation | Status | Body |
 |---|---|---|
-| Valid request, no engine for that language | `501 Not Implemented` | `ApiError` explaining that no engine is available yet |
+| JavaScript request | `200 OK` | `ExecutionResponse`; `success` is false for compile/runtime errors |
+| Valid request, known language without an engine | `501 Not Implemented` | `ApiError` explaining that no engine is available yet |
 | Unknown language id | `400 Bad Request` | `ApiError` listing the known ids |
 | Blank/missing/oversized field | `400 Bad Request` | `ApiError` with the failing field(s) |
 | Malformed or missing JSON | `400 Bad Request` | `ApiError` |
 | Unexpected server failure | `500 Internal Server Error` | generic `ApiError`, details only in logs |
 
-There is deliberately **no execution logic on Day 9**. The endpoint validates,
-resolves the language and routes to a `CodeExecutor`; because none is registered
-yet, every valid request gets an honest `501` instead of invented output. As of
-Day 9 no language — including JavaScript, Python and Java — is executable. Ruby,
-C, C++, Rust, Go and R stay editor-only until adapters exist and are tested.
+As of Day 10 only **JavaScript** executes. Python, Ruby, Java, C, C++, Rust, Go
+and R still return an honest `501` — no output is simulated for them. Java is
+planned as a JDK-compiler adapter, C/C++/Rust/Go/R as external toolchains; the
+embedded engine only serves languages whose Truffle artifacts are present.
 
 ## Architecture
 
@@ -123,7 +156,13 @@ HTTP -> ExecutionController   (validation, status codes)
         ExecutionService      (language resolution, executor routing)
           |
           v
-        CodeExecutor          (interface; one bean per language, none yet)
+        CodeExecutor          (one bean per language: JavaScriptExecutor today)
+          |
+          v
+        GraalVmSandbox        (fresh locked-down Context per request)
+          |
+          v
+        GraalVmEngine         (one shared, lazily created polyglot Engine)
           |
           v
         ExecutionResult       (internal) -> ExecutionResponse (API)
@@ -131,9 +170,14 @@ HTTP -> ExecutionController   (validation, status codes)
 
 - `ExecutionRequest` / `ExecutionResponse` / `ApiError` are the API contract.
 - `ExecutionResult` stays internal so adapters can evolve without breaking clients.
+- `GraalVmEngine` owns the single thread-safe `Engine`, creates it lazily and
+  reports the languages actually installed on the classpath.
+- `GraalVmSandbox` creates a new `Context` per execution, captures stdout/stderr,
+  applies the timeout and caps output. It never reuses a guest context.
+- `JavaScriptExecutor` is the only adapter today. Availability is derived from the
+  engine, so a missing language artifact means an honest `501`, never fake output.
 - Executors are injected as a list and indexed by `Language`; adding a language
-  is a new bean, not a change to the controller or service. `isAvailable()` lets
-  an adapter fail closed when its runtime or toolchain is missing.
+  is a new bean, not a change to the controller or service.
 - `GlobalExceptionHandler` gives every error one JSON shape and hides stack
   traces and internal messages on `500`.
 
@@ -147,6 +191,10 @@ HTTP -> ExecutionController   (validation, status codes)
 | `spring.application.name` | `PolyglotMesh` |
 | `management.endpoints.web.exposure.include` | `health,info` |
 | `polyglotmesh.cors.allowed-origins` | `http://localhost:5173`, `http://127.0.0.1:5173` |
+| `polyglotmesh.graalvm.enabled` | `true`; the master switch for polyglot execution |
+| `polyglotmesh.graalvm.execution-timeout` | `5s`; wall-clock limit per request |
+| `polyglotmesh.graalvm.max-output-chars` | `100000`; stdout/stderr cap |
+| `polyglotmesh.graalvm.max-error-chars` | `20000`; error text cap |
 
 CORS applies to `/api/**` only and deliberately does not use `*`, so the API is
 not opened to arbitrary browser origins. Add the Vite preview origin (4173) or a
@@ -161,16 +209,26 @@ deployed origin to the property when there is a real need.
 | `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
 | `ExecutionRequestValidationTest` | Required fields, blank values, size limits, optional input |
 | `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping |
-| `ExecutionControllerTest` | 501 without engines, 400 for invalid/blank/unknown/malformed requests, 405 |
+| `ExecutionControllerTest` | 501 without executor beans, 400 for invalid/blank/unknown/malformed requests, 405 |
 | `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details |
+| `GraalVmEngineTest` | Engine availability, installed-language detection (`js` only), disabled mode |
+| `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation |
+| `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Python |
 
 ## Current limitations
 
-- No execution engine is registered yet, so `/api/execute` answers `501` for all
-  nine languages. This is not simulated execution.
-- No GraalVM dependency or runtime is wired yet (Day 10).
+- **Only JavaScript executes.** Python, Ruby, Java, C, C++, Rust, Go and R return
+  `501`; there is no simulated output for them.
+- GraalPy and TruffleRuby artifacts are not dependencies yet (Days 11–12).
+- On the stock JDK 21 used here, GraalJS runs in Truffle's fallback interpreter
+  mode (no runtime compilation). Starting the jar on the installed GraalVM JDK
+  enables compiled execution, but that is not required for correctness.
+- Execution is in-process. The `Context` sandbox denies host/IO/process access and
+  enforces a timeout, but it does **not** impose a hard per-request CPU or memory
+  quota, and it is not a container boundary. Do not describe it as production
+  isolation.
+- Request limits remain at the API boundary; output caps and the timeout are the
+  executor-level limits available today.
 - No authentication, database or persistence.
-- No claim of sandbox security: execution isolation is designed in later days and
-  is not production-strength merely because a process or `Context` exists.
-- Limits enforced today are request-size and routing checks at the API boundary;
-  CPU/memory limits belong to the executors and their isolation layer.
+- JavaScript standard input is exposed through `readLine()`/`readAll()`; other
+  languages will get their own bridge with their adapters.
