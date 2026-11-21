@@ -63,13 +63,13 @@ class JavaScriptExecutionIntegrationTest {
     @Test
     void languagesWithoutAnEngineStillAnswer501() {
         ResponseEntity<JsonNode> response = execute(Map.of(
-                "language", "python",
-                "code", "print('hello')",
+                "language", "ruby",
+                "code", "puts 'hello'",
                 "input", ""));
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
         assertThat(response.getBody().path("status").asInt()).isEqualTo(501);
-        assertThat(response.getBody().path("message").asText()).contains("python");
+        assertThat(response.getBody().path("message").asText()).contains("ruby");
     }
 
     private ResponseEntity<JsonNode> execute(Map<String, String> body) {
