@@ -1,8 +1,9 @@
 # PolyglotMesh Backend
 
 Spring Boot service for PolyglotMesh, the GraalVM multi-language runtime sandbox.
-Week 2 builds this backend incrementally. Day 10 embeds GraalVM and executes
-JavaScript for real; every other language answers `501` until its adapter exists.
+Week 2 builds this backend incrementally. Day 11 executes JavaScript (GraalJS)
+and Python (GraalPy) for real; every other language answers `501` until its
+adapter exists.
 
 ## Stack
 
@@ -13,12 +14,12 @@ JavaScript for real; every other language answers `501` until its adapter exists
 | Build tool | Maven 3.9.16 |
 | Modules | Spring Web, Validation, Actuator |
 | GraalVM Polyglot API | 23.1.12 (`org.graalvm.polyglot:polyglot`) |
-| Embedded language | GraalJS 23.1.12 (`js-community`) |
+| Embedded languages | GraalJS 23.1.12 (`js-community`), GraalPy 23.1.12 (`python-community`) |
 | Tests | JUnit 5, Mockito (via `spring-boot-starter-test`) |
 
-Only GraalJS is bundled. GraalPy and TruffleRuby are **not** dependencies yet,
-so the engine reports Python and Ruby as unavailable rather than pretending to
-run them. C, C++, Rust, Go and R need external toolchains and stay editor-only.
+GraalJS and GraalPy are bundled. TruffleRuby is **not** a dependency yet, so the
+engine reports Ruby as unavailable rather than pretending to run it. C, C++,
+Rust, Go and R need external toolchains and stay editor-only.
 
 ## Local tool paths
 
@@ -123,6 +124,22 @@ timeout (default 5 s) cancels infinite loops, and output/error text is capped.
 startup also pays the one-off GraalVM engine start (a few seconds here), so the
 first measurement is larger than subsequent ones.
 
+### Python (executable)
+
+Python runs on GraalPy. Standard input is a real `sys.stdin`, so the built-in
+`input()` behaves as expected:
+
+```python
+name = input()
+count = int(input())
+print(f"Hello, {name}! " * count)
+```
+
+The same sandbox rules apply: a fresh context per request, no host access, no
+file or network IO, no process or thread creation, the wall-clock timeout and
+capped output. GraalPy starts more slowly than GraalJS in interpreter mode, so
+the first Python request after startup can take several seconds.
+
 Validation limits (enforced before any executor is reached):
 
 | Field | Rule |
@@ -135,15 +152,15 @@ Current behaviour and status codes:
 
 | Situation | Status | Body |
 |---|---|---|
-| JavaScript request | `200 OK` | `ExecutionResponse`; `success` is false for compile/runtime errors |
+| JavaScript or Python request | `200 OK` | `ExecutionResponse`; `success` is false for compile/runtime errors |
 | Valid request, known language without an engine | `501 Not Implemented` | `ApiError` explaining that no engine is available yet |
 | Unknown language id | `400 Bad Request` | `ApiError` listing the known ids |
 | Blank/missing/oversized field | `400 Bad Request` | `ApiError` with the failing field(s) |
 | Malformed or missing JSON | `400 Bad Request` | `ApiError` |
 | Unexpected server failure | `500 Internal Server Error` | generic `ApiError`, details only in logs |
 
-As of Day 10 only **JavaScript** executes. Python, Ruby, Java, C, C++, Rust, Go
-and R still return an honest `501` — no output is simulated for them. Java is
+As of Day 11 **JavaScript and Python** execute. Ruby, Java, C, C++, Rust, Go and
+R still return an honest `501` — no output is simulated for them. Java is
 planned as a JDK-compiler adapter, C/C++/Rust/Go/R as external toolchains; the
 embedded engine only serves languages whose Truffle artifacts are present.
 
@@ -156,7 +173,7 @@ HTTP -> ExecutionController   (validation, status codes)
         ExecutionService      (language resolution, executor routing)
           |
           v
-        CodeExecutor          (one bean per language: JavaScriptExecutor today)
+        CodeExecutor          (one bean per language: JavaScriptExecutor, PythonExecutor)
           |
           v
         GraalVmSandbox        (fresh locked-down Context per request)
@@ -174,8 +191,9 @@ HTTP -> ExecutionController   (validation, status codes)
   reports the languages actually installed on the classpath.
 - `GraalVmSandbox` creates a new `Context` per execution, captures stdout/stderr,
   applies the timeout and caps output. It never reuses a guest context.
-- `JavaScriptExecutor` is the only adapter today. Availability is derived from the
-  engine, so a missing language artifact means an honest `501`, never fake output.
+- `JavaScriptExecutor` and `PythonExecutor` are the adapters today. Availability
+  is derived from the engine, so a missing language artifact means an honest
+  `501`, never fake output.
 - Executors are injected as a list and indexed by `Language`; adding a language
   is a new bean, not a change to the controller or service.
 - `GlobalExceptionHandler` gives every error one JSON shape and hides stack
@@ -211,18 +229,21 @@ deployed origin to the property when there is a real need.
 | `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping |
 | `ExecutionControllerTest` | 501 without executor beans, 400 for invalid/blank/unknown/malformed requests, 405 |
 | `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details |
-| `GraalVmEngineTest` | Engine availability, installed-language detection (`js` only), disabled mode |
+| `GraalVmEngineTest` | Engine availability, installed-language detection (`js`, `python`), disabled mode |
 | `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation |
-| `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Python |
+| `GraalVmPythonSandboxTest` | Real GraalPy runs: output, `input()`, runtime/syntax errors, host and file denial, timeout cancellation, output cap, context isolation |
+| `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Ruby |
+| `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, stdin, and runtime errors |
 
 ## Current limitations
 
-- **Only JavaScript executes.** Python, Ruby, Java, C, C++, Rust, Go and R return
+- **JavaScript and Python execute.** Ruby, Java, C, C++, Rust, Go and R return
   `501`; there is no simulated output for them.
-- GraalPy and TruffleRuby artifacts are not dependencies yet (Days 11–12).
-- On the stock JDK 21 used here, GraalJS runs in Truffle's fallback interpreter
-  mode (no runtime compilation). Starting the jar on the installed GraalVM JDK
-  enables compiled execution, but that is not required for correctness.
+- TruffleRuby artifacts are not dependencies yet (Day 12).
+- On the stock JDK 21 used here, GraalJS and GraalPy run in Truffle's fallback
+  interpreter mode (no runtime compilation). Starting the jar on the installed
+  GraalVM JDK enables compiled execution, but that is not required for
+  correctness. GraalPy is noticeably slower to start in interpreter mode.
 - Execution is in-process. The `Context` sandbox denies host/IO/process access and
   enforces a timeout, but it does **not** impose a hard per-request CPU or memory
   quota, and it is not a container boundary. Do not describe it as production
@@ -230,5 +251,6 @@ deployed origin to the property when there is a real need.
 - Request limits remain at the API boundary; output caps and the timeout are the
   executor-level limits available today.
 - No authentication, database or persistence.
-- JavaScript standard input is exposed through `readLine()`/`readAll()`; other
-  languages will get their own bridge with their adapters.
+- Standard input is language-idiomatic: `readLine()`/`readAll()` for JavaScript
+  and real `sys.stdin`/`input()` for Python. Other languages will get their own
+  bridge with their adapters.

@@ -136,14 +136,22 @@ public class GraalVmSandbox implements AutoCloseable {
     /**
      * Makes standard input available to the guest.
      *
-     * <p>Only JavaScript is bridged for now, through the documented
-     * {@code readLine()} and {@code readAll()} helpers. Other languages get
-     * their own bridge together with their adapters.</p>
+     * <p>Each embedded language gets an idiom-appropriate bridge: JavaScript
+     * uses {@code readLine()}/{@code readAll()}, Python receives a real
+     * {@code sys.stdin} so the built-in {@code input()} works. Other languages
+     * get their bridge together with their adapters.</p>
      */
     private void installStandardInput(Context context, String polyglotLanguageId, String stdin) {
-        if (!"js".equals(polyglotLanguageId)) {
-            return;
+        switch (polyglotLanguageId) {
+            case "js" -> installJavaScriptStdin(context, stdin);
+            case "python" -> installPythonStdin(context, stdin);
+            default -> {
+                // No bridge yet for this language.
+            }
         }
+    }
+
+    private void installJavaScriptStdin(Context context, String stdin) {
         Value bindings = context.getBindings("js");
         bindings.putMember("__polyglotmeshStdin", stdin);
         context.eval("js", """
@@ -160,6 +168,16 @@ public class GraalVmSandbox implements AutoCloseable {
                   globalThis.readAll = () => lines.slice(index).join('\\n');
                   try { delete globalThis.__polyglotmeshStdin; } catch (ignored) {}
                 })();
+                """);
+    }
+
+    private void installPythonStdin(Context context, String stdin) {
+        context.getBindings("python").putMember("__polyglotmesh_stdin", stdin);
+        context.eval("python", """
+                import io as __polyglotmesh_io
+                import sys as __polyglotmesh_sys
+                __polyglotmesh_sys.stdin = __polyglotmesh_io.StringIO(__polyglotmesh_stdin)
+                del __polyglotmesh_io, __polyglotmesh_sys, __polyglotmesh_stdin
                 """);
     }
 

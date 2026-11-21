@@ -20,8 +20,8 @@ import org.springframework.stereotype.Component;
  *
  * <p>Language availability is reported from the engine itself, not from a hard
  * coded list: a language is available only when its artifacts are on the
- * classpath. On Day 10 only GraalJS is bundled, so only {@code js} answers
- * true; Python and Ruby will follow when their artifacts are added.</p>
+ * classpath. Day 11 bundles GraalJS and GraalPy, so {@code js} and
+ * {@code python} answer true; Ruby will follow when its artifact is added.</p>
  */
 @Component
 public class GraalVmEngine {

@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The engine reports what is actually installed, not what the product plans to
- * support. Only GraalJS is bundled on Day 10.
+ * support. Day 11 bundles GraalJS and GraalPy.
  */
 class GraalVmEngineTest {
 
@@ -29,16 +29,16 @@ class GraalVmEngineTest {
     }
 
     @Test
-    void reportsBundledJavaScriptLanguage() {
+    void reportsBundledLanguages() {
         assertThat(engine.isEnabled()).isTrue();
         assertThat(engine.isAvailable()).isTrue();
-        assertThat(engine.availableLanguageIds()).contains("js");
+        assertThat(engine.availableLanguageIds()).contains("js", "python");
         assertThat(engine.supports("js")).isTrue();
+        assertThat(engine.supports("python")).isTrue();
     }
 
     @Test
     void reportsLanguagesWithoutArtifactsAsUnavailable() {
-        assertThat(engine.supports("python")).isFalse();
         assertThat(engine.supports("ruby")).isFalse();
         assertThat(engine.supports("cobol")).isFalse();
         assertThat(engine.supports(null)).isFalse();
