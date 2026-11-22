@@ -19,7 +19,7 @@ public interface CodeExecutor {
     /**
      * Whether the backing runtime or toolchain is usable on this host right
      * now. A registered but unavailable executor produces 501, never a fake
-     * result. Day 9 has no implementations; Days 10-13 add real checks.
+     * result. JavaScript, Python and Java implement real checks.
      */
     boolean isAvailable();
 
