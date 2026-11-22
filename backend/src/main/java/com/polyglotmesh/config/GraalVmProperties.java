@@ -4,14 +4,16 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Limits applied to every GraalVM execution.
+ * Limits applied to every execution, whether it runs on the GraalVM engine or
+ * on the JDK toolchain.
  *
  * <p>They are configuration, not constants, because the safe timeout depends on
  * the machine: a laptop running the interpreter needs more headroom than a
  * dedicated build agent. Defaults are deliberately conservative.</p>
  *
- * @param enabled         master switch; when false no polyglot engine is created
- * @param executionTimeout wall-clock limit for a single evaluation
+ * @param enabled         master switch for the GraalVM engine; Java execution
+ *                        uses the JDK toolchain independently
+ * @param executionTimeout wall-clock limit for a single execution
  * @param maxOutputChars  cap on returned stdout/stderr
  * @param maxErrorChars   cap on returned error text
  */
