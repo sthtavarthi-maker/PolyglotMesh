@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.polyglotmesh.dto.ExecutionRequest;
 import com.polyglotmesh.dto.ExecutionResponse;
+import com.polyglotmesh.dto.LanguageStatus;
 import com.polyglotmesh.exception.ExecutionUnavailableException;
 import com.polyglotmesh.exception.UnsupportedLanguageException;
 import com.polyglotmesh.executor.CodeExecutor;
@@ -120,10 +121,33 @@ class ExecutionServiceTest {
     }
 
     @Test
-    void listsOnlyLanguagesWithExecutors() {
-        ExecutionService service = new ExecutionService(List.of(executorFor(Language.JAVA)));
+    void listsOnlyAvailableLanguages() {
+        CodeExecutor available = executorFor(Language.JAVA);
+        when(available.isAvailable()).thenReturn(true);
+        CodeExecutor unavailable = executorFor(Language.PYTHON);
+        when(unavailable.isAvailable()).thenReturn(false);
+        ExecutionService service = new ExecutionService(List.of(available, unavailable));
 
         assertThat(service.availableLanguages()).containsExactly(Language.JAVA);
+    }
+
+    @Test
+    void reportsEveryLanguageWithItsAvailability() {
+        CodeExecutor available = executorFor(Language.JAVA);
+        when(available.isAvailable()).thenReturn(true);
+        ExecutionService service = new ExecutionService(List.of(available));
+
+        List<LanguageStatus> statuses = service.languageStatuses();
+
+        assertThat(statuses).hasSize(Language.values().length);
+        assertThat(statuses).extracting(LanguageStatus::id)
+                .containsExactlyElementsOf(Language.knownIds());
+        assertThat(statuses).filteredOn(status -> status.id().equals("java"))
+                .allMatch(LanguageStatus::available);
+        assertThat(statuses).filteredOn(status -> status.id().equals("ruby"))
+                .noneMatch(LanguageStatus::available);
+        assertThat(statuses).filteredOn(status -> status.id().equals("javascript"))
+                .allMatch(status -> status.displayName().equals("JavaScript") && !status.available());
     }
 
     private CodeExecutor executorFor(Language language) {

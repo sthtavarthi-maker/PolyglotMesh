@@ -4,6 +4,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -25,6 +26,11 @@ class GlobalExceptionHandlerTest {
         void boom() {
             throw new IllegalStateException("database password is hunter2");
         }
+
+        @GetMapping("/limited")
+        void limited() {
+            throw new TooManyRequestsException("Too many execution requests. Try again shortly.", 7);
+        }
     }
 
     @Test
@@ -41,5 +47,21 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.path").value("/boom"))
                 .andExpect(content().string(not(containsString("hunter2"))))
                 .andExpect(content().string(not(containsString("IllegalStateException"))));
+    }
+
+    @Test
+    void admissionRejectionBecomes429WithRetryAfter() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new ThrowingController())
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(get("/limited"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "7"))
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.error").value("Too Many Requests"))
+                .andExpect(jsonPath("$.message")
+                        .value("Too many execution requests. Try again shortly."))
+                .andExpect(jsonPath("$.path").value("/limited"));
     }
 }

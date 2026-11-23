@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The engine reports what is actually installed, not what the product plans to
- * support. Day 11 bundles GraalJS and GraalPy.
+ * support. This build bundles GraalJS and GraalPy.
  */
 class GraalVmEngineTest {
 
@@ -42,6 +42,14 @@ class GraalVmEngineTest {
         assertThat(engine.supports("ruby")).isFalse();
         assertThat(engine.supports("cobol")).isFalse();
         assertThat(engine.supports(null)).isFalse();
+    }
+
+    @Test
+    void detectsBundledProvidersWithoutStartingTheEngine() {
+        assertThat(GraalVmEngine.providerPresent("js")).isTrue();
+        assertThat(GraalVmEngine.providerPresent("python")).isTrue();
+        assertThat(GraalVmEngine.providerPresent("ruby")).isFalse();
+        assertThat(GraalVmEngine.providerPresent(null)).isFalse();
     }
 
     @Test

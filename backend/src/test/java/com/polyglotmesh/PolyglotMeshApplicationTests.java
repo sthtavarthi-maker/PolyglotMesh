@@ -2,6 +2,10 @@ package com.polyglotmesh;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.polyglotmesh.model.Language;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -42,5 +46,30 @@ class PolyglotMeshApplicationTests {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("\"status\":\"UP\"");
+    }
+
+    @Test
+    void languagesEndpointReportsEveryLanguageWithAvailability() {
+        ResponseEntity<JsonNode> response =
+                restTemplate.getForEntity("/api/languages", JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode languages = response.getBody().path("languages");
+        assertThat(languages.size()).isEqualTo(Language.values().length);
+
+        Map<String, Boolean> availability = new HashMap<>();
+        languages.forEach(node ->
+                availability.put(node.path("id").asText(), node.path("available").asBoolean()));
+
+        assertThat(availability)
+                .hasSize(Language.values().length)
+                .containsEntry("java", true)
+                .containsEntry("javascript", true)
+                .containsEntry("python", true)
+                .containsEntry("ruby", false)
+                .containsEntry("c", false);
+
+        assertThat(languages.get(0).path("id").asText()).isEqualTo("java");
+        assertThat(languages.get(0).path("displayName").asText()).isEqualTo("Java");
     }
 }

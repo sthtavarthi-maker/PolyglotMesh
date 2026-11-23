@@ -2,17 +2,23 @@ package com.polyglotmesh.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
  * Real Java compilation and execution through the JDK toolchain: output,
- * standard input, package handling, diagnostics, process isolation, timeout
- * cancellation and output capping.
+ * standard input, package handling, diagnostics, process isolation, compile and
+ * execution timeouts, output capping and temp-directory cleanup.
  */
 class JavaExecutionSandboxTest {
 
@@ -20,7 +26,13 @@ class JavaExecutionSandboxTest {
 
     @BeforeAll
     static void setUp() {
-        sandbox = new JavaExecutionSandbox(properties(Duration.ofSeconds(15), 10_000));
+        sandbox = new JavaExecutionSandbox(
+                properties(Duration.ofSeconds(15), 10_000), executionProperties());
+    }
+
+    @AfterAll
+    static void tearDown() {
+        sandbox.close();
     }
 
     @Test
@@ -164,44 +176,104 @@ class JavaExecutionSandboxTest {
 
     @Test
     void truncatesLargeOutput() {
-        JavaExecutionSandbox small =
-                new JavaExecutionSandbox(properties(Duration.ofSeconds(15), 50));
-        ExecutionResult result = small.execute("""
-                public class Main {
-                    public static void main(String[] args) {
-                        System.out.print("x".repeat(500));
+        JavaExecutionSandbox small = new JavaExecutionSandbox(
+                properties(Duration.ofSeconds(15), 50), executionProperties());
+        try {
+            ExecutionResult result = small.execute("""
+                    public class Main {
+                        public static void main(String[] args) {
+                            System.out.print("x".repeat(500));
+                        }
                     }
-                }
-                """, "");
+                    """, "");
 
-        assertThat(result.success()).isTrue();
-        assertThat(result.output()).endsWith("[output truncated]");
-        assertThat(result.output().length()).isLessThan(80);
+            assertThat(result.success()).isTrue();
+            assertThat(result.output()).endsWith("[output truncated]");
+            assertThat(result.output().length()).isLessThan(80);
+        } finally {
+            small.close();
+        }
     }
 
     @Test
     @Timeout(30)
     void cancelsInfiniteLoops() {
-        JavaExecutionSandbox quick =
-                new JavaExecutionSandbox(properties(Duration.ofSeconds(1), 1_000));
-        long startedAt = System.nanoTime();
-        ExecutionResult result = quick.execute("""
-                public class Main {
-                    public static void main(String[] args) {
-                        while (true) {
-                            // spin
+        JavaExecutionSandbox quick = new JavaExecutionSandbox(
+                properties(Duration.ofSeconds(1), 1_000), executionProperties());
+        try {
+            long startedAt = System.nanoTime();
+            ExecutionResult result = quick.execute("""
+                    public class Main {
+                        public static void main(String[] args) {
+                            while (true) {
+                                // spin
+                            }
                         }
                     }
-                }
-                """, "");
-        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+                    """, "");
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.error()).contains("timed out");
-        assertThat(elapsedMs).isLessThan(10_000);
+            assertThat(result.success()).isFalse();
+            assertThat(result.error()).contains("timed out");
+            assertThat(elapsedMs).isLessThan(10_000);
+        } finally {
+            quick.close();
+        }
+    }
+
+    @Test
+    void cancelsCompilationThatExceedsItsBudget() {
+        JavaExecutionSandbox impatient = new JavaExecutionSandbox(
+                properties(Duration.ofSeconds(15), 10_000),
+                executionProperties(Duration.ofNanos(1)));
+        try {
+            ExecutionResult result = impatient.execute("""
+                    public class Main {
+                        public static void main(String[] args) {
+                            System.out.println("too late");
+                        }
+                    }
+                    """, "");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.error()).contains("Compilation timed out");
+        } finally {
+            impatient.close();
+        }
+    }
+
+    @Test
+    void sweepsStaleWorkDirectoriesOnStartup() throws IOException {
+        Path stale = Files.createTempDirectory("polyglotmesh-java-stale-");
+        Files.setLastModifiedTime(
+                stale, FileTime.fromMillis(System.currentTimeMillis() - Duration.ofHours(2).toMillis()));
+
+        JavaExecutionSandbox sweeper = new JavaExecutionSandbox(
+                properties(Duration.ofSeconds(15), 10_000), executionProperties());
+        try {
+            assertThat(Files.exists(stale)).isFalse();
+        } finally {
+            sweeper.close();
+            Files.deleteIfExists(stale);
+        }
     }
 
     private static GraalVmProperties properties(Duration timeout, int maxOutputChars) {
         return new GraalVmProperties(true, timeout, maxOutputChars, 2_000);
+    }
+
+    private static ExecutionProperties executionProperties() {
+        return executionProperties(Duration.ofSeconds(30));
+    }
+
+    private static ExecutionProperties executionProperties(Duration compileTimeout) {
+        return new ExecutionProperties(
+                true,
+                60,
+                Duration.ofMinutes(1),
+                4,
+                Duration.ofSeconds(2),
+                compileTimeout,
+                Duration.ofHours(1));
     }
 }
