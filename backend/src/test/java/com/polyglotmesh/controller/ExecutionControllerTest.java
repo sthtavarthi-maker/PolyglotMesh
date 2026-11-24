@@ -5,21 +5,25 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.exception.GlobalExceptionHandler;
+import com.polyglotmesh.service.ExecutionGate;
 import com.polyglotmesh.service.ExecutionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * Exercises the real controller and service with no executor beans in this
- * web slice, so every known language still answers 501.
+ * Exercises the real controller, gate and service with no executor beans in
+ * this web slice, so every known language still answers 501.
  */
 @WebMvcTest(ExecutionController.class)
-@Import({ExecutionService.class, GlobalExceptionHandler.class})
+@Import({ExecutionService.class, ExecutionGate.class, GlobalExceptionHandler.class})
+@EnableConfigurationProperties(ExecutionProperties.class)
 class ExecutionControllerTest {
 
     private static final String VALID_BODY = """

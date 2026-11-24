@@ -2,11 +2,13 @@ package com.polyglotmesh.service;
 
 import com.polyglotmesh.dto.ExecutionRequest;
 import com.polyglotmesh.dto.ExecutionResponse;
+import com.polyglotmesh.dto.LanguageStatus;
 import com.polyglotmesh.exception.ExecutionUnavailableException;
 import com.polyglotmesh.exception.UnsupportedLanguageException;
 import com.polyglotmesh.executor.CodeExecutor;
 import com.polyglotmesh.model.ExecutionResult;
 import com.polyglotmesh.model.Language;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -16,8 +18,8 @@ import org.springframework.stereotype.Service;
  * Language resolution and executor routing.
  *
  * <p>The service owns no execution logic. Executors are injected as a list and
- * indexed by language, so a request is answered by exactly one adapter. With no
- * adapter registered (the state at Day 9) a known language fails with
+ * indexed by language, so a request is answered by exactly one adapter. A known
+ * language with no registered adapter fails with
  * {@link ExecutionUnavailableException} instead of returning invented output.</p>
  */
 @Service
@@ -59,8 +61,27 @@ public class ExecutionService {
         return ExecutionResponse.from(language, result);
     }
 
-    /** Languages that currently have a real execution engine. */
+    /** Languages that currently have an available executor, in enum order. */
     public List<Language> availableLanguages() {
-        return List.copyOf(executors.keySet());
+        return executors.values().stream()
+                .filter(CodeExecutor::isAvailable)
+                .map(CodeExecutor::language)
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Every product language with its current availability, in enum order.
+     * Unavailable languages are included so clients can render them disabled
+     * instead of probing with real execution requests.
+     */
+    public List<LanguageStatus> languageStatuses() {
+        List<LanguageStatus> statuses = new ArrayList<>(Language.values().length);
+        for (Language language : Language.values()) {
+            CodeExecutor executor = executors.get(language);
+            boolean available = executor != null && executor.isAvailable();
+            statuses.add(new LanguageStatus(language.id(), language.displayName(), available));
+        }
+        return List.copyOf(statuses);
     }
 }

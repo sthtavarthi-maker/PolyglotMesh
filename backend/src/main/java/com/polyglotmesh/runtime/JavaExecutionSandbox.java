@@ -1,7 +1,9 @@
 package com.polyglotmesh.runtime;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -14,7 +16,18 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -42,6 +55,12 @@ import org.springframework.stereotype.Component;
  * read and write files and open network connections as the backend user. That
  * limitation is documented in the README and is not hidden behind a "sandbox"
  * claim.</p>
+ *
+ * <p>Compilation is bounded by {@code polyglotmesh.execution.compile-timeout}
+ * and runs on a small daemon pool. A pathological compiler task cannot hold the
+ * request thread, and the bounded pool prevents runaway compile threads.
+ * Temporary directories and child processes are tracked so shutdown can clean
+ * them up; stale directories from a previous crash are swept at startup.</p>
  */
 @Component
 public class JavaExecutionSandbox {
@@ -56,20 +75,36 @@ public class JavaExecutionSandbox {
             "\\b(?:(?:final|abstract|sealed|non-sealed|static)\\s+)*"
                     + "(?:class|record|enum|interface)\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
     private static final Pattern PACKAGE = Pattern.compile(
-            "^\\s*package\\s+([A-Za-z_$][A-Za-z0-9_$.]*)\\s*;", Pattern.MULTILINE);
+            "^\\s*package\\s+([A-Za-z_$][A-Za-z0-9_.$]*)\\s*;", Pattern.MULTILINE);
 
+    private static final String WORK_DIR_PREFIX = "polyglotmesh-java-";
     private static final int CHILD_HEAP_MB = 128;
+    private static final long DEFERRED_CLEANUP_SECONDS = 30;
     private static final String OUTPUT_TRUNCATED = "\n[output truncated]";
     private static final String ERROR_TRUNCATED = "\n[error truncated]";
 
     private final GraalVmProperties properties;
+    private final ExecutionProperties executionProperties;
     private final boolean available;
     private final Path javaLauncher;
+    private final ExecutorService compilerExecutor;
+    private final ScheduledExecutorService cleanupExecutor;
+    private final Set<Process> runningProcesses = ConcurrentHashMap.newKeySet();
+    private final Set<Path> activeWorkDirs = ConcurrentHashMap.newKeySet();
+    private final Set<Path> pendingCleanup = ConcurrentHashMap.newKeySet();
 
-    public JavaExecutionSandbox(GraalVmProperties properties) {
+    public JavaExecutionSandbox(
+            GraalVmProperties properties, ExecutionProperties executionProperties) {
         this.properties = properties;
+        this.executionProperties = executionProperties;
         this.available = ToolProvider.getSystemJavaCompiler() != null;
         this.javaLauncher = locateJavaLauncher();
+        this.compilerExecutor = Executors.newFixedThreadPool(
+                Math.max(1, executionProperties.maxConcurrentExecutions()),
+                daemonThreads("polyglotmesh-javac"));
+        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor(
+                daemonThreads("polyglotmesh-cleanup"));
+        sweepStaleWorkDirs();
     }
 
     /** True when this runtime has both a Java compiler and a Java launcher. */
@@ -86,24 +121,30 @@ public class JavaExecutionSandbox {
      */
     public ExecutionResult execute(String source, String stdin) {
         long startedAt = System.nanoTime();
-        String className = entryClassName(source);
-        if (className == null) {
+        String typeName = entryClassName(source);
+        if (typeName == null) {
             return ExecutionResult.failure(
                     "No top-level type declaration found.", elapsedMillis(startedAt));
         }
 
         Path workDir = null;
+        boolean deferCleanup = false;
         try {
-            workDir = Files.createTempDirectory("polyglotmesh-java-");
+            workDir = Files.createTempDirectory(WORK_DIR_PREFIX);
+            activeWorkDirs.add(workDir);
             Path classesDir = Files.createDirectories(workDir.resolve("classes"));
-            Path sourceFile = workDir.resolve(className + ".java");
+            Path sourceFile = workDir.resolve(typeName + ".java");
             Files.writeString(sourceFile, source, StandardCharsets.UTF_8);
 
-            String compilationError = compile(sourceFile, classesDir);
-            if (compilationError != null) {
-                return ExecutionResult.failure(compilationError, elapsedMillis(startedAt));
+            CompileOutcome compilation = compile(sourceFile, classesDir);
+            if (compilation.error() != null) {
+                // A timed-out compiler may still be touching its source and
+                // class files, so let it finish before removing the directory.
+                deferCleanup = compilation.timedOut();
+                return ExecutionResult.failure(
+                        compilation.error(), elapsedMillis(startedAt));
             }
-            return run(launchName(className, source), classesDir, workDir, stdin, startedAt);
+            return run(launchName(typeName, source), classesDir, workDir, stdin, startedAt);
         } catch (IOException exception) {
             log.error("Java execution setup failed", exception);
             return ExecutionResult.failure(
@@ -113,7 +154,14 @@ public class JavaExecutionSandbox {
             return ExecutionResult.failure(
                     "Execution was interrupted.", elapsedMillis(startedAt));
         } finally {
-            deleteRecursively(workDir);
+            if (workDir != null) {
+                activeWorkDirs.remove(workDir);
+                if (deferCleanup) {
+                    scheduleCleanup(workDir);
+                } else {
+                    deleteRecursively(workDir);
+                }
+            }
         }
     }
 
@@ -133,11 +181,35 @@ public class JavaExecutionSandbox {
         return packageName.find() ? packageName.group(1) + "." + simpleName : simpleName;
     }
 
-    private String compile(Path sourceFile, Path classesDir) throws IOException {
+    private CompileOutcome compile(Path sourceFile, Path classesDir) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) {
-            return "No Java compiler is available on this server.";
+            return new CompileOutcome("No Java compiler is available on this server.", false);
         }
+
+        Future<String> task = compilerExecutor.submit(
+                () -> compileNow(compiler, sourceFile, classesDir));
+        try {
+            String error = task.get(executionProperties.compileTimeoutNanos(), TimeUnit.NANOSECONDS);
+            return new CompileOutcome(error, false);
+        } catch (TimeoutException timeout) {
+            task.cancel(true);
+            long timeoutMs = Math.max(
+                    1, TimeUnit.NANOSECONDS.toMillis(executionProperties.compileTimeoutNanos()));
+            return new CompileOutcome(
+                    "Compilation timed out after " + timeoutMs + " ms.", true);
+        } catch (ExecutionException failure) {
+            log.error("Java compilation failed", failure.getCause());
+            return new CompileOutcome("Execution failed on the server.", false);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            task.cancel(true);
+            return new CompileOutcome("Execution was interrupted.", false);
+        }
+    }
+
+    private String compileNow(JavaCompiler compiler, Path sourceFile, Path classesDir)
+            throws IOException {
         DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
         try (StandardJavaFileManager fileManager = compiler.getStandardFileManager(
                 diagnostics, Locale.ROOT, StandardCharsets.UTF_8)) {
@@ -197,45 +269,55 @@ public class JavaExecutionSandbox {
         builder.environment().put("TMP", workDir.toString());
 
         Process process = builder.start();
-        StreamCollector stdout =
-                new StreamCollector(process.getInputStream(), properties.maxOutputChars(), OUTPUT_TRUNCATED);
-        StreamCollector stderr =
-                new StreamCollector(process.getErrorStream(), properties.maxErrorChars(), ERROR_TRUNCATED);
-        Thread stdoutReader = stdout.start("polyglotmesh-java-stdout");
-        Thread stderrReader = stderr.start("polyglotmesh-java-stderr");
+        runningProcesses.add(process);
+        try {
+            StreamCollector stdout = new StreamCollector(
+                    process.getInputStream(), properties.maxOutputChars(), OUTPUT_TRUNCATED);
+            StreamCollector stderr = new StreamCollector(
+                    process.getErrorStream(), properties.maxErrorChars(), ERROR_TRUNCATED);
+            Thread stdoutReader = stdout.start("polyglotmesh-java-stdout");
+            Thread stderrReader = stderr.start("polyglotmesh-java-stderr");
 
-        try (OutputStream childStdin = process.getOutputStream()) {
-            childStdin.write((stdin == null ? "" : stdin).getBytes(StandardCharsets.UTF_8));
-        } catch (IOException ignored) {
-            // The child may exit before reading input; that is reported by its exit status.
-        }
+            try (OutputStream childStdin = process.getOutputStream()) {
+                childStdin.write(
+                        (stdin == null ? "" : stdin).getBytes(StandardCharsets.UTF_8));
+            } catch (IOException ignored) {
+                // The child may exit before reading input; its exit status reports that.
+            }
 
-        boolean finished = process.waitFor(properties.timeoutMillis(), TimeUnit.MILLISECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(2, TimeUnit.SECONDS);
-        }
-        stdoutReader.join(2_000);
-        stderrReader.join(2_000);
+            boolean finished =
+                    process.waitFor(properties.timeoutMillis(), TimeUnit.MILLISECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+            }
+            stdoutReader.join(2_000);
+            stderrReader.join(2_000);
 
-        long elapsed = elapsedMillis(startedAt);
-        String output = normalizeNewlines(stdout.text());
-        String error = normalizeNewlines(stderr.text());
+            long elapsed = elapsedMillis(startedAt);
+            String output = normalizeNewlines(stdout.text());
+            String error = normalizeNewlines(stderr.text());
 
-        if (!finished) {
-            return ExecutionResult.failure(
-                    output,
-                    "Execution timed out after " + properties.timeoutMillis() + " ms.",
-                    elapsed);
+            if (!finished) {
+                return ExecutionResult.failure(
+                        output,
+                        "Execution timed out after " + properties.timeoutMillis() + " ms.",
+                        elapsed);
+            }
+            int exitCode = process.exitValue();
+            if (exitCode == 0) {
+                return ExecutionResult.success(output + error, elapsed);
+            }
+            String failure = error.isBlank()
+                    ? "Program exited with status " + exitCode + "."
+                    : error;
+            return ExecutionResult.failure(output, failure, elapsed);
+        } finally {
+            runningProcesses.remove(process);
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
-        int exitCode = process.exitValue();
-        if (exitCode == 0) {
-            return ExecutionResult.success(output + error, elapsed);
-        }
-        String failure = error.isBlank()
-                ? "Program exited with status " + exitCode + "."
-                : error;
-        return ExecutionResult.failure(output, failure, elapsed);
     }
 
     private static Path locateJavaLauncher() {
@@ -244,6 +326,49 @@ public class JavaExecutionSandbox {
                 .contains("win") ? "java.exe" : "java";
         Path launcher = Path.of(System.getProperty("java.home"), "bin", executable);
         return Files.isRegularFile(launcher) ? launcher : null;
+    }
+
+    private void scheduleCleanup(Path workDir) {
+        pendingCleanup.add(workDir);
+        try {
+            cleanupExecutor.schedule(() -> {
+                pendingCleanup.remove(workDir);
+                deleteRecursively(workDir);
+            }, DEFERRED_CLEANUP_SECONDS, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException shuttingDown) {
+            pendingCleanup.remove(workDir);
+            deleteRecursively(workDir);
+        }
+    }
+
+    /**
+     * Removes work directories abandoned by a previous run (for example after a
+     * crash or a forced shutdown). Recent directories are left alone so a
+     * concurrently starting instance is not disturbed.
+     */
+    private void sweepStaleWorkDirs() {
+        String tmp = System.getProperty("java.io.tmpdir");
+        if (tmp == null) {
+            return;
+        }
+        Path root = Path.of(tmp);
+        long cutoff = System.currentTimeMillis() - executionProperties.staleWorkDirAgeMillis();
+        try (Stream<Path> entries = Files.list(root)) {
+            entries.filter(Files::isDirectory)
+                    .filter(path -> path.getFileName().toString().startsWith(WORK_DIR_PREFIX))
+                    .filter(path -> lastModified(path) < cutoff)
+                    .forEach(JavaExecutionSandbox::deleteRecursively);
+        } catch (IOException exception) {
+            log.debug("Could not sweep stale Java work directories: {}", exception.getMessage());
+        }
+    }
+
+    private static long lastModified(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException exception) {
+            return Long.MAX_VALUE;
+        }
     }
 
     private static String limit(String text, int max, String suffix) {
@@ -262,6 +387,15 @@ public class JavaExecutionSandbox {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
+    private static ThreadFactory daemonThreads(String prefix) {
+        AtomicInteger counter = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable, prefix + "-" + counter.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
     private static void deleteRecursively(Path root) {
         if (root == null) {
             return;
@@ -271,12 +405,34 @@ public class JavaExecutionSandbox {
                 try {
                     Files.deleteIfExists(path);
                 } catch (IOException ignored) {
-                    // Best effort: temp files are also cleaned by the OS.
+                    // Best effort: a compiler may still be finishing, or the OS holds a lock.
                 }
             });
         } catch (IOException exception) {
             log.debug("Could not remove temporary directory {}: {}", root, exception.getMessage());
         }
+    }
+
+    /** Stops compiler/cleanup threads and removes anything still tracked. */
+    @PreDestroy
+    public void close() {
+        compilerExecutor.shutdownNow();
+        cleanupExecutor.shutdownNow();
+        for (Process process : runningProcesses) {
+            process.destroyForcibly();
+        }
+        runningProcesses.clear();
+        for (Path workDir : activeWorkDirs) {
+            deleteRecursively(workDir);
+        }
+        activeWorkDirs.clear();
+        for (Path workDir : pendingCleanup) {
+            deleteRecursively(workDir);
+        }
+        pendingCleanup.clear();
+    }
+
+    private record CompileOutcome(String error, boolean timedOut) {
     }
 
     /** Drains a child stream, keeping at most {@code maxChars} characters. */

@@ -3,6 +3,7 @@ package com.polyglotmesh.runtime;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.Language;
 import jakarta.annotation.PreDestroy;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.graalvm.polyglot.Engine;
@@ -18,16 +19,20 @@ import org.springframework.stereotype.Component;
  * which is where actual isolation lives. Creating the engine lazily keeps the
  * application (and tests that never execute code) from paying for it.</p>
  *
- * <p>Language availability is reported from the engine itself, not from a hard
- * coded list: a language is available only when its artifacts are on the
- * classpath. Day 12 bundles GraalJS and GraalPy, so {@code js} and
- * {@code python} answer true. TruffleRuby is not bundled because its 23.1
- * runtime does not support Windows.</p>
+ * <p>Availability checks look for the bundled language provider classes instead
+ * of creating the engine, so {@code GET /api/languages} and the 501 decision do
+ * not trigger a multi-second engine start. This build bundles GraalJS and
+ * GraalPy, so {@code js} and {@code python} answer true. TruffleRuby is not
+ * bundled because its 23.1 runtime does not support Windows.</p>
  */
 @Component
 public class GraalVmEngine {
 
     private static final Logger log = LoggerFactory.getLogger(GraalVmEngine.class);
+
+    private static final Map<String, String> LANGUAGE_PROVIDERS = Map.of(
+            "js", "com.oracle.truffle.js.lang.JavaScriptLanguage",
+            "python", "com.oracle.graal.python.PythonLanguage");
 
     private final GraalVmProperties properties;
     private final Object lock = new Object();
@@ -88,16 +93,37 @@ public class GraalVmEngine {
         }
     }
 
-    /** Whether the engine has the given polyglot language (never throws). */
+    /** Whether the bundled runtime can serve the given polyglot language (never throws). */
     public boolean supports(String polyglotLanguageId) {
-        return polyglotLanguageId != null && availableLanguageIds().contains(polyglotLanguageId);
+        return isEnabled() && !initializationFailed && providerPresent(polyglotLanguageId);
+    }
+
+    /**
+     * Checks for the language's provider class without initialising it. This is
+     * a cheap, side-effect-free availability signal; actual execution remains
+     * the final authority.
+     */
+    static boolean providerPresent(String polyglotLanguageId) {
+        if (polyglotLanguageId == null) {
+            return false;
+        }
+        String className = LANGUAGE_PROVIDERS.get(polyglotLanguageId);
+        if (className == null) {
+            return false;
+        }
+        try {
+            Class.forName(className, false, GraalVmEngine.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError unavailable) {
+            return false;
+        }
     }
 
     /**
      * Polyglot id for languages the embedded engine can serve.
      *
      * <p>Java is deliberately absent: Java programs are compiled with the JDK
-     * compiler and run in a child class loader, not as a Truffle language. C,
+     * compiler and run in a separate child JVM, not as a Truffle language. C,
      * C++, Rust, Go and R need external toolchains, so they have no polyglot id
      * either.</p>
      */
