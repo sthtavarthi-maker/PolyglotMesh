@@ -1,11 +1,11 @@
 # PolyglotMesh Backend
 
 Spring Boot service for PolyglotMesh, the GraalVM multi-language runtime sandbox.
-Week 2 builds this backend incrementally. Day 13 executes JavaScript (GraalJS),
-Python (GraalPy) and Java (JDK toolchain) for real, reports capabilities through
-`GET /api/languages`, and guards the execution endpoint with per-client rate
-limits, bounded concurrency and timeouts. Every other language answers `501`
-until its adapter exists.
+Week 2 builds this backend incrementally. Day 14 finalizes the service:
+JavaScript (GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
+`GET /api/languages` reports capabilities, the execution endpoint is protected by
+per-client rate limits and bounded concurrency, and shutdown is graceful. Every
+other language answers `501` until its adapter exists.
 
 ## Stack
 
@@ -74,7 +74,7 @@ The service listens on **http://localhost:8080**.
 | GET | `/api/languages` | Read-only capability list | every language with `available` true/false |
 | POST | `/api/execute` | Unified execution endpoint | `200` with the execution result; `501` for a known language without an engine; `429` when over quota/busy; `400` for invalid input |
 | GET | `/actuator/health` | Actuator liveness/readiness | `{"status":"UP"}` |
-| GET | `/actuator/info` | Application metadata | build/app info |
+| GET | `/actuator/info` | Application and build metadata | app name/description plus `build` version and artifact |
 
 Only `health` and `info` actuator endpoints are exposed; health details are hidden.
 
@@ -297,6 +297,8 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
 |---|---|
 | `server.port` | `8080` (checked free on the development machine) |
 | `spring.application.name` | `PolyglotMesh` |
+| `server.shutdown` | `graceful`; stop accepting new work and let in-flight executions finish |
+| `spring.lifecycle.timeout-per-shutdown-phase` | `30s`; upper bound for the graceful phase (covers one Java compile plus execution) |
 | `management.endpoints.web.exposure.include` | `health,info` |
 | `polyglotmesh.cors.allowed-origins` | `http://localhost:5173`, `http://127.0.0.1:5173` |
 | `polyglotmesh.graalvm.enabled` | `true`; master switch for the GraalVM engine (JavaScript/Python). Java uses the JDK toolchain independently. |
@@ -319,11 +321,22 @@ CORS applies to `/api/**` only and deliberately does not use `*`, so the API is
 not opened to arbitrary browser origins. Add the Vite preview origin (4173) or a
 deployed origin to the property when there is a real need.
 
+## Operations
+
+- `/actuator/info` exposes the application name/description and, because the
+  Maven build runs Spring Boot's `build-info` goal, the project version and
+  artifact name. It is a safe way to confirm which build is running.
+- Shutdown is graceful: Spring stops accepting new requests, waits up to 30 s
+  for in-flight executions, then tears down the context. `@PreDestroy` then
+  kills any tracked child JVM and deletes tracked temporary directories.
+- A forced kill (for example `Stop-Process -Force` on Windows) bypasses graceful
+  shutdown; the next startup sweeps stale Java work directories.
+
 ## Tests
 
 | Test class | Covers |
 |---|---|
-| `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health`, `/api/languages` availability on a real random port |
+| `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health`, `/actuator/info` build metadata, `/api/languages` availability on a real random port |
 | `HealthControllerTest` | Web slice: JSON body, content type, unknown API path |
 | `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
 | `ExecutionRequestValidationTest` | Required fields, blank values, size limits, optional input |
@@ -338,6 +351,22 @@ deployed origin to the property when there is a real need.
 | `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Ruby |
 | `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, stdin, and runtime errors |
 | `JavaExecutionIntegrationTest` | End-to-end `/api/execute`: Java success, stdin, compile failure, and 501 for Ruby |
+
+## Verification
+
+Recorded on 24 November 2026 with the packaged jar on the development machine:
+
+- `mvn -B -ntp clean verify`: **96 tests, 0 failures, 0 errors, 0 skipped**;
+  `BUILD SUCCESS` in 1 min 46 s; jar written to `target/`.
+- Live smoke test on `http://localhost:8080`: **11/11 checks passed** — health,
+  `/actuator/info` (app name plus build version/artifact), nine-language discovery,
+  JavaScript, Python, Java, Ruby `501`, CORS, bounded-concurrency `429`
+  (`Retry-After: 1`), rate-limit `429` (`Retry-After: 60`), and a read-only
+  endpoint still answering after throttling.
+- After shutdown: no child `java` processes, no `polyglotmesh-java-*` temporary
+  directories, and no `ERROR`/`WARN` lines in the application log.
+
+Timings vary on this host; the functional results are what matter.
 
 ## Current limitations
 

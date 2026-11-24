@@ -6,9 +6,10 @@ PolyglotMesh is built on **Java 21 + GraalVM** and uses the **GraalVM Polyglot A
 languages inside a single JVM process — no external execution service, container runtime or third-party
 judge is involved.
 
-> **Project status:** Week 1 — project foundation and frontend development.
-> Code execution is not implemented yet. Any output shown in the UI before backend integration is
-> clearly marked as demonstration data.
+> **Project status:** Week 2 — backend complete (Days 8–14).
+> The REST backend executes Java, Python and JavaScript for real, reports available languages, and
+> enforces rate/concurrency limits. The frontend is not wired to the backend yet; execution is
+> currently available through the REST API. The other six editor languages remain editor-only.
 
 ---
 
@@ -41,6 +42,9 @@ judge is involved.
 | API style | REST |
 | API testing | Postman |
 
+Authentication, JWT, MySQL persistence, saving and sharing are part of the planned stack and are
+**not implemented yet**. The current backend is stateless and has no database.
+
 ## Repository Structure
 
 ```
@@ -60,6 +64,19 @@ git clone https://github.com/sthtavarthi-maker/PolyglotMesh.git
 cd PolyglotMesh
 ```
 
+### Backend
+
+Requires Java 21 and Maven 3.9+.
+
+```bash
+cd backend
+mvn spring-boot:run      # http://localhost:8080
+```
+
+`mvn clean verify` runs the full test suite and builds the executable jar. See
+[`backend/README.md`](backend/README.md) for the endpoints, configuration,
+supported languages and known limitations.
+
 ### Frontend
 
 Requires Node.js 20.19+ (verified with 25.7.0).
@@ -70,8 +87,7 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-The backend is introduced in a later development day. See
-[`frontend/README.md`](frontend/README.md) for all frontend scripts and the `src/` layout.
+See [`frontend/README.md`](frontend/README.md) for all frontend scripts and the `src/` layout.
 
 The verified local development environment (tool versions, known PATH issues, and how to re-check
 everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
@@ -94,8 +110,16 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 | 6 | Compiler workspace UI |
 | 7 | Monaco Editor integration |
 | 8 | Nine-language editor support (Java, Python, JavaScript, Ruby, C, C++, Rust, Go, R; editor-only for the six new modes) |
+| 9 | Backend architecture and the unified execution API (still `501` until adapters land) |
+| 10 | GraalVM integration and real JavaScript execution on GraalJS |
+| 11 | Real Python execution on GraalPy |
+| 12 | Real Java execution with the JDK compiler and an isolated child JVM |
+| 13 | Language discovery (`GET /api/languages`), admission control, compile timeout and cleanup |
+| 14 | Operational finalization: graceful shutdown, build metadata, final verification and documentation |
 
-Further weekly plans are added as the project progresses.
+Week 2 is complete for the backend. Java, Python and JavaScript execute; Ruby, C, C++, Rust, Go
+and R remain editor-only and return an honest `501`. Further weekly plans are added as the project
+progresses.
 
 ## License
 

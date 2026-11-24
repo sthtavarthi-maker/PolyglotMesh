@@ -14,8 +14,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 /**
- * Starts the real application on a random port and checks the contracts that
- * Day 8 promises: the context boots and both health endpoints answer.
+ * Starts the real application on a random port and checks the public bootstrap
+ * contracts: the context boots, health/info answer, and language capabilities
+ * are discoverable.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class PolyglotMeshApplicationTests {
@@ -46,6 +47,20 @@ class PolyglotMeshApplicationTests {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("\"status\":\"UP\"");
+    }
+
+    @Test
+    void infoEndpointExposesApplicationAndBuildMetadata() {
+        ResponseEntity<JsonNode> response =
+                restTemplate.getForEntity("/actuator/info", JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().path("app").path("name").asText())
+                .isEqualTo("PolyglotMesh");
+        assertThat(response.getBody().path("build").path("version").asText())
+                .isEqualTo("0.0.1-SNAPSHOT");
+        assertThat(response.getBody().path("build").path("artifact").asText())
+                .isEqualTo("polyglotmesh-backend");
     }
 
     @Test
