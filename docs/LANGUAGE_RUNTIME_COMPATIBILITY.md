@@ -6,20 +6,23 @@ implements today.
 
 - **Repository:** `https://github.com/sthtavarthi-maker/PolyglotMesh`
 - **Documented branch:** `leelavardhini-dev`
-- **Baseline commit:** `cca6061` ("Day 12: Execute Java with the JDK toolchain"), merged into
-  this branch
-- **Last reviewed:** 23 November 2026
+- **Baseline commit:** `f252d2c` ("Day 13: improve execution engine, add language status API and
+  update tests"), merged into this branch
+- **Last reviewed:** 24 November 2026
 - **Scope:** language runtimes, execution adapters, host toolchain requirements and sandbox
   controls. No application code is changed by this document.
 
-> **Read this first.** As of Day 12, **JavaScript, Python and Java execute end to end** through
-> `POST /api/execute`. JavaScript and Python run on GraalJS and GraalPy inside a locked-down
-> Polyglot context; Java is compiled with the JDK compiler and run in a child JVM with a 128 MB
-> heap, a cleared environment and a 5-second timeout. The other **six languages still return
-> `501 Not Implemented`** because no adapter exists for them. The in-process engines have no hard
-> CPU/memory quota, and Java's child process is process isolation rather than a security boundary:
-> guest Java code can still read and write files and open network connections as the backend user.
-> Editor-only languages must not be described as runnable.
+> **Read this first.** As of Day 13, **JavaScript, Python and Java execute end to end** through
+> `POST /api/execute`, and `GET /api/languages` reports which runtimes this deployment can run.
+> JavaScript and Python run on GraalJS and GraalPy inside a locked-down Polyglot context; Java is
+> compiled with the JDK compiler and run in a child JVM with a 128 MB heap, a cleared environment
+> and a 5-second timeout. The other **six languages still return `501 Not Implemented`** because no
+> adapter exists for them. Execution is guarded by a per-client request quota and a bounded
+> concurrency limit (`429` with `Retry-After`), but those limits are per instance and are not a
+> security boundary. The in-process engines still have no hard CPU/memory quota, and Java's child
+> process is process isolation rather than a security sandbox: guest Java code can still read and
+> write files and open network connections as the backend user. Editor-only languages must not be
+> described as runnable.
 
 ---
 
@@ -70,9 +73,10 @@ runtimes. JavaScript, Python and Java are the only languages that may be describ
 ## 2. Language Runtime Compatibility Matrix
 
 Execution Method and Integration Type describe the intended design. Implementation Status
-describes the **current** state of the repository at the baseline commit. Since Day 12,
-JavaScript and Python execute on GraalJS and GraalPy in-process, and Java compiles with the JDK
-compiler and runs in a child JVM; the remaining six languages have no executor and return `501`.
+describes the **current** state of the repository at the baseline commit. Since Day 13,
+JavaScript and Python execute on GraalJS and GraalPy in-process, Java compiles with the JDK
+compiler and runs in a child JVM, and `GET /api/languages` reports those capabilities without
+starting a runtime; the remaining six languages have no executor and return `501`.
 
 | Programming Language | Runtime / Compiler | Execution Method | Integration Type | Implementation Status |
 |---|---|---|---|---|
@@ -106,9 +110,10 @@ truth for editor modes:
 The type definition in `frontend/src/types/language.ts` states the limitation directly: the
 `runtime` field is "a description of the execution target, not proof that execution works".
 `frontend/README.md` repeats that Run, Save and Share remain disabled for all nine languages.
-Days 10-12 added working backend runtimes but did not connect the frontend, so the workspace UI
-still disables Run; JavaScript, Python and Java are reachable through the REST API, not through
-the browser yet.
+Days 10-13 added working backend runtimes and a capability endpoint but did not connect the
+frontend, so the workspace UI still disables Run; JavaScript, Python and Java are reachable through
+the REST API, not through the browser yet. `GET /api/languages` already exposes availability for
+the frontend to consume, but no page calls it.
 
 For Ruby, C, C++, Rust, Go and R, the runtime label is `null`, so even the *intended* engine is
 not recorded in the application. JavaScript and Python are the exceptions whose engines are
@@ -119,36 +124,42 @@ matrix come from the project plan and this design document, not from working cod
 
 ### 2.2 What exists and what is absent
 
-Day 12 makes **Java** executable alongside JavaScript and Python:
+Day 13 adds capability discovery and admission control to the three working runtimes:
 
-- `JavaExecutor` and `JavaExecutionSandbox` are registered components; availability is checked at
-  runtime from `ToolProvider.getSystemJavaCompiler()` plus a located `java` launcher, so a JRE
-  answers `501` instead of failing with a server error;
-- Java compiles in-process with the JDK `JavaCompiler` (`--release` matching the running JDK,
-  `-proc:none`, UTF-8), and execution happens in a **child JVM**, not inside the backend process;
-- the child gets `-Xmx128m`, `-XX:+UseSerialGC`, a private working directory, its own
-  `java.io.tmpdir` and a cleared environment (only `TEMP`/`TMP` point into the workspace);
-- the entry class is detected as the first public top-level type (or the first type when none is
-  public), so single-file programs run; the child is killed when the shared timeout expires and the
-  temporary workspace is deleted in a `finally` block;
-- `System.exit(...)` and JVM crashes are contained by the child process, and compilation
-  diagnostics are returned as structured errors;
-- `backend/pom.xml` declares `polyglot`, `js-community` and `python-community`; Java needs no
-  extra dependency because the JDK already ships the compiler and launcher;
-- the test suite includes real GraalJS, GraalPy and Java runs plus end-to-end `/api/execute` tests.
+- `GET /api/languages` lists all nine editor languages with an `available` flag. Availability comes
+  from bundled provider classes and the JDK toolchain; the check does not start a GraalVM engine or
+  a child JVM.
+- `ExecutionGate` runs before any language is resolved. It enforces a fixed-window per-client
+  request quota (60 per minute by default) and a bounded number of concurrent executions (four),
+  waiting up to two seconds for a slot before returning `429` with `Retry-After`. Its permit is
+  closed in a `try`-with-resources block, so a failed execution cannot leak a slot.
+- Java compilation now runs on a bounded daemon pool with its own timeout (20 seconds by default),
+  so a pathological source cannot hold the request thread or spawn unbounded compile threads.
+- A timed-out compile keeps its directory for 30 seconds before cleanup, and abandoned Java work
+  directories older than one hour are swept at startup.
+- Java execution still happens in a child JVM with a 128 MB heap, a cleared environment, a private
+  temporary directory and a timeout kill; `System.exit(...)` and JVM crashes stay contained.
+- JavaScript and Python still run in a fresh locked-down Polyglot context per request, with host,
+  IO, thread, process, native and environment access denied.
+- The test suite includes real GraalJS, GraalPy and Java runs, admission-control tests, the
+  capability endpoint and end-to-end `/api/execute` tests.
 
 Still absent:
 
 - executors for Ruby, C, C++, Rust, Go and R, which all answer `501`;
 - the TruffleRuby artifact, which is blocked on this Windows host;
-- a hard per-request CPU or memory quota for the in-process engines;
+- a hard per-request CPU or memory quota for the in-process engines, and a memory cap for Java
+  compilation;
 - filesystem and network restrictions for guest code, and container or OS-level isolation;
+- distributed admission control: the rate limit and concurrency slots are in-memory and per
+  instance, and the rate-limit key is the caller's remote address, not a verified identity;
 - frontend integration, so the browser workspace still has Run disabled.
 
 The backend genuinely executes three languages. It is not a general sandbox: JavaScript and Python
 run inside the backend JVM, while Java is process-isolated but its child can still read and write
-files and open network connections as the backend user. Java also pays a child-JVM start-up cost,
-and GraalPy starts more slowly than GraalJS in interpreter mode.
+files and open network connections as the backend user. Admission control protects capacity, not
+fairness: a client inside its quota can still occupy all four slots. Java also pays a child-JVM
+start-up cost, and GraalPy starts more slowly than GraalJS in interpreter mode.
 
 ---
 
@@ -166,13 +177,15 @@ launched from the running JDK.
 
 - **Repository evidence:** `JavaExecutor` is a registered `CodeExecutor`; `JavaExecutionSandbox`
   compiles and launches programs; `JavaExecutionSandboxTest` and `JavaExecutionIntegrationTest`
-  cover real compilation, stdin, diagnostics, `System.exit` isolation, timeout cancellation,
-  output caps and `/api/execute`.
+  cover real compilation, stdin, diagnostics, `System.exit` isolation, execution and compile
+  timeouts, output caps, stale-directory cleanup and `/api/execute`.
 - **No extra dependency:** the JDK already ships the compiler (`javax.tools`) and the launcher, so
   availability is checked at runtime rather than declared in `pom.xml`.
-- **Isolation:** the child JVM gets `-Xmx128m`, `-XX:+UseSerialGC`, a private working directory,
-  `java.io.tmpdir` inside that workspace, a cleared environment and a forced kill when the timeout
-  expires; the workspace is deleted in a `finally` block.
+- **Isolation:** compilation runs on a bounded daemon pool with its own 20-second timeout; the child
+  JVM gets `-Xmx128m`, `-XX:+UseSerialGC`, a private working directory, `java.io.tmpdir` inside that
+  workspace, a cleared environment and a forced kill when the execution timeout expires.
+- **Cleanup:** the workspace is deleted in a `finally` block; a timed-out compile keeps its
+  directory briefly for diagnostics, and directories older than one hour are swept at startup.
 - **Caveat:** this is process isolation, not a security sandbox. The child runs as the backend user
   and can still read and write files and open network connections; compilation itself runs inside
   the backend JVM. Entry-point detection is heuristic (first public top-level type), and programs
@@ -279,7 +292,8 @@ R is interpreted with `Rscript` in a restricted child process.
 
 The architecture separates **one public contract** from **many independent adapters**. The goal
 is that adding a language never changes the HTTP layer or the frontend. Day 9 built the contract,
-validation and routing; Days 10-12 added working executors for JavaScript, Python and Java.
+validation and routing; Days 10-13 added working executors for JavaScript, Python and Java, plus
+capability discovery and admission control.
 
 ### 4.1 Request flow (JavaScript, Python and Java are live)
 
@@ -291,6 +305,9 @@ Browser (React workspace, not yet connected)
 ExecutionController            (HTTP validation, status codes)
         |
         v
+ExecutionGate                   (per-client quota + bounded concurrency; 429)
+        |
+        v
 ExecutionService               (Language.fromId, executor routing)
         |
         v
@@ -300,9 +317,13 @@ CodeExecutor (interface)
         |                                        fresh Context, 5 s timeout
         +--> PythonExecutor     (registered) --> GraalVmSandbox --> GraalPy
         +--> JavaExecutor       (registered) --> JavaExecutionSandbox
-        |                                        JavaCompiler + child JVM, 128 MB heap
+        |                                        JavaCompiler (bounded pool) + child JVM
         |
         +--> no other executor -----------------> 501 Not Implemented
+
+Capability discovery:
+        GET /api/languages --> LanguageController --> ExecutionService -->
+        each language with available true/false, without starting a runtime
 
 Planned implementations behind the same interface:
         +--> TruffleRubyExecutor   in-process (Polyglot Context, ruby)
@@ -340,15 +361,23 @@ Response body (null fields are serialised so the shape stays stable):
 |---|---|
 | `success` | Whether the program ran and exited successfully. |
 | `language` | Echo of the resolved language id. |
-| `output` | Captured stdout/stderr; produced for JavaScript, Python and Java since Day 12. |
+| `output` | Captured stdout/stderr; produced for JavaScript, Python and Java. |
 | `error` | Failure message, or `null` on success. |
 | `executionTimeMs` | Execution duration reported by the executor. |
 
-Current status codes: `200` for a JavaScript, Python or Java request, including programs that fail
-with a syntax, compile or runtime error (`success` is then false); `400` for an unknown language,
-blank field, size violation or malformed JSON; `501` when a known language has no available
-executor; `500` for an unexpected server failure with a generic body that leaks no stack trace. A
-missing engine produces an honest `501`, never fabricated output.
+Current status codes: `200` for a JavaScript, Python or Java request within quota, including
+programs that fail with a syntax, compile or runtime error (`success` is then false); `400` for an
+unknown language, blank field, size violation or malformed JSON; `429` when the caller exceeds its
+request quota or no execution slot becomes free within the acquire timeout, with a `Retry-After`
+header; `501` when a known language has no available executor; `500` for an unexpected server
+failure with a generic body that leaks no stack trace. A missing engine produces an honest `501`,
+never fabricated output.
+
+`GET /api/languages` returns every product language in editor order with a boolean `available`
+field, for example `{"languages":[{"id":"java","displayName":"Java","available":true}, ...]}`.
+Availability is derived from bundled language providers and the JDK toolchain; it does not start
+the GraalVM engine or a child JVM. Unavailable languages remain valid execution requests and still
+answer `501`.
 
 ### 4.3 Adapter families
 
@@ -378,23 +407,28 @@ missing engine produces an honest `501`, never fabricated output.
 ### 4.4 Shared execution policy layer
 
 **Implemented:** source and input size caps at the API boundary, language allow-listing, one JSON
-error shape, fail-closed routing, a 5-second execution timeout and output/error caps. These limits
-are configured in `application.properties` and enforced for JavaScript, Python and Java.
+error shape, fail-closed routing, a 5-second execution timeout, a 20-second Java compile timeout,
+output/error caps, capability discovery and admission control. The execution gate applies a
+fixed-window per-client quota (60 requests per minute), a bounded concurrency limit (four
+executions), a two-second slot wait and `429` with `Retry-After`; all are configured in
+`application.properties`.
 
-**Not implemented:** hard memory limits for the in-process engines and for Java compilation, CPU
-quotas and concurrency limits. These need a worker JVM, cgroup or container boundary, not just an
-in-process setting. Timeout enforcement is also per-executor today rather than centralised, so it
-must be re-checked when each new adapter lands. Error mapping already avoids leaking host paths and
-stack traces.
+**Not implemented:** hard memory limits for the in-process engines and for Java compilation, and
+CPU quotas. These need a worker JVM, cgroup or container boundary, not just an in-process setting.
+Timeout enforcement is also per-executor today rather than centralised, so it must be re-checked
+when each new adapter lands. Admission control is in-memory and per instance, keyed to the remote
+address rather than a verified identity, and it protects capacity rather than fairness. Error
+mapping already avoids leaking host paths and stack traces.
 
 ### 4.5 Current state
 
-Days 10-12 implement the full path for JavaScript, Python and Java: the three executors ->
-`GraalVmSandbox` -> `GraalVmEngine` -> GraalJS/GraalPy for the embedded engines, and
-`JavaExecutionSandbox` -> JDK `JavaCompiler` + child JVM for Java, with a timeout and output caps.
-The API returns real program output for `javascript`, `python` and `java`, and `501` for the other
-six languages. Ruby and the native toolchains remain adapters to be written, and the isolation
-controls in section 6 are only partially implemented.
+Days 10-13 implement the full path for JavaScript, Python and Java. Execution passes through
+`ExecutionGate` into `ExecutionService`; JavaScript and Python use `GraalVmSandbox` ->
+`GraalVmEngine` -> GraalJS/GraalPy, while Java uses `JavaExecutionSandbox` -> JDK `JavaCompiler`
+(bounded pool) + child JVM, with a timeout and output caps. The API returns real program output for
+`javascript`, `python` and `java`, `501` for the other six languages, and `GET /api/languages`
+reports availability without starting a runtime. Ruby and the native toolchains remain adapters to
+be written, and the isolation controls in section 6 are only partially implemented.
 
 ---
 
@@ -430,7 +464,7 @@ local versions. Relevant points:
   the JDK's own compiler and launcher, and TruffleRuby is still absent.
 - Only Java, Maven, Node.js, npm and Git were verified. **No C, C++, Rust, Go or R toolchain was
   verified**, so the native-language group has no environment evidence at all.
-- The Day 12 suite ran on Java 21.0.12 and passed (83 tests), which verifies the GraalJS, GraalPy
+- The Day 13 suite ran on Java 21.0.12 and passed (95 tests), which verifies the GraalJS, GraalPy
   and JDK Java paths on this machine but does not replace a deployment-image check.
 
 Consequences:
@@ -462,7 +496,8 @@ isolation boundary.
 - **Implemented for JavaScript, Python and Java:** a 5-second wall-clock deadline per request
   (configurable via `polyglotmesh.graalvm.execution-timeout`). In-process evaluation runs on a
   daemon worker and is cancelled by closing the `Context`; the Java adapter force-kills the child
-  JVM. A tight loop is interrupted this way.
+  JVM. Java compilation has a separate 20-second deadline on a bounded daemon pool
+  (`polyglotmesh.execution.compile-timeout`). A tight loop is interrupted this way.
 - **Still required:** the deadline for native languages must also cover compilation, and a hard
   server maximum should clamp any client-supplied value. Timeout enforcement currently lives in
   the executor rather than a central policy layer.
@@ -501,7 +536,8 @@ isolation boundary.
   JVM-level escape is not contained by this design.
 - **Java is process-isolated, but not securely sandboxed.** The child JVM contains `System.exit`
   and JVM crashes, has a 128 MB heap, a cleared environment and a private working directory, and is
-  killed on timeout. It still runs as the backend user with filesystem and network access.
+  killed on timeout. Compilation runs in-process on a bounded pool; only the guest program is
+  separated. The child still runs as the backend user with filesystem and network access.
 - **Native languages must run in a separate process**, ideally under a dedicated low-privilege OS
   user, without inheriting the backend's environment, file descriptors or working directory.
 - Arguments must be passed as an argument vector; user input is never interpolated into a shell
@@ -528,12 +564,14 @@ isolation boundary.
 
 - **Implemented for Java:** each run gets a unique temporary directory holding the source, compiled
   classes and the child's `java.io.tmpdir`; it is deleted in a `finally` block after success,
-  compile failure, timeout or crash.
+  compile failure, timeout or crash. A timed-out compile keeps its directory for 30 seconds before
+  cleanup, and directories older than `polyglotmesh.execution.stale-work-dir-age` (one hour) are
+  swept at startup.
 - **Not applicable to JavaScript or Python:** both execute in memory and create no temporary files.
 - **Required for native adapters:** delete each workspace in a `finally` block after every run,
   including compile failures, timeouts and crashes.
-- Add a startup sweep for orphaned workspaces older than a fixed age, covering kills that skip
-  normal cleanup; log and alert on cleanup failures.
+- Startup sweeping is implemented for Java; native adapters must reuse it and log or alert on
+  cleanup failures.
 - Compiled artefacts must not be reused across users. Any cache must be keyed by content and
   scoped to one language and toolchain version.
 
@@ -543,8 +581,13 @@ isolation boundary.
   10,000-character input, 32-character language id).
 - **Fail closed:** implemented; an unknown language, missing engine or disabled runtime returns an
   error and never falls back to another adapter.
-- **Concurrency limits** per user and globally: not implemented, and needed to prevent resource
-  exhaustion through volume.
+- **Admission control:** implemented in-memory per instance. A fixed-window quota of 60 valid
+  execution requests per minute is keyed to the caller's remote address (forwarded headers are not
+  trusted), and four executions may run concurrently; waiting requests give up after two seconds.
+  Both limits return `429` with `Retry-After`. A multi-instance deployment shares no quota, so
+  global enforcement needs a shared store or an edge proxy.
+- **Concurrency limits** are therefore bounded per instance, but not per verified user; a client
+  staying under its quota can still occupy all execution slots.
 - **No secrets in the execution image**, and no backend credentials in the child process
   environment: required before native execution ships.
 - **Audit logging** of language, duration, outcome and limit violations, without logging full
@@ -564,9 +607,10 @@ The realistic sequence follows the project roadmap and the existing metadata:
 | 2 | JavaScript (GraalJS), sandbox, timeout, output caps | **Done and tested (Day 10)** |
 | 3 | Python (GraalPy) using the same sandbox | **Done and tested (Day 11)** |
 | 4 | Java (JDK compiler + child JVM) | **Done and tested (Day 12)** |
-| 5 | Ruby (TruffleRuby or CRuby) | Blocked on this Windows host; engine choice still open |
-| 6 | C and C++ (GCC/Clang, G++/Clang++) | Planned; establishes the native sandbox pattern |
-| 7 | Rust, Go, R | Planned; reuse the native pattern |
+| 5 | Language discovery, admission control, Java compile timeout and stale sweep | **Done and tested (Day 13)** |
+| 6 | Ruby (TruffleRuby or CRuby) | Blocked on this Windows host; engine choice still open |
+| 7 | C and C++ (GCC/Clang, G++/Clang++) | Planned; establishes the native sandbox pattern |
+| 8 | Rust, Go, R | Planned; reuse the native pattern |
 
 Sequencing rule: a language is only exposed in the UI after its adapter passes the compatibility
 suite. Editor mode availability does not imply execution availability, and the UI must keep
@@ -589,9 +633,11 @@ A compatibility suite should verify behaviour, not just "it ran":
   asserting equivalent output.
 
 JavaScript, Python and Java are marked **Tested** because their suites cover successful execution,
-stdin, syntax/compile and runtime errors, timeout cancellation, output truncation, host/file access
-denial or process containment, plus end-to-end `/api/execute` tests. The other six remain untested;
-the cross-language suite and golden programs above are still future work.
+stdin, syntax/compile and runtime errors, execution and compile timeout cancellation, output
+truncation, host/file access denial or process containment, admission control (`429`, quota reset,
+client isolation), capability discovery, stale-directory cleanup and end-to-end `/api/execute`
+tests. The other six remain untested; the cross-language suite and golden programs above are still
+future work.
 
 ### 7.3 Documentation follow-ups
 
@@ -606,7 +652,7 @@ the cross-language suite and golden programs above are still future work.
 ## Appendix A - Verification Notes
 
 This document was written against the repository, not against the project plan alone. The
-following evidence was inspected at commit `cca6061` on branch `leelavardhini-dev`:
+following evidence was inspected at commit `f252d2c` on branch `leelavardhini-dev`:
 
 | Evidence | Location | Finding |
 |---|---|---|
@@ -615,18 +661,22 @@ following evidence was inspected at commit `cca6061` on branch `leelavardhini-de
 | Frontend status | `frontend/README.md` | Java/Python/JavaScript backends marked "planned"; six languages "Not integrated - editor only"; Run/Save/Share disabled. |
 | Project status | `README.md` | Still says execution is not implemented; predates Day 10, so that line is stale for JavaScript, Python and Java. |
 | Environment | `docs/DEVELOPMENT_SETUP.md` | GraalVM JDK present, no C/C++/Rust/Go/R toolchain verified. |
-| Backend scope | `backend/README.md` | Day 12: JavaScript, Python and Java execute; six languages return `501`; Ruby blocked on Windows. |
+| Backend scope | `backend/README.md` | Day 13: JavaScript, Python and Java execute; `GET /api/languages` reports availability; six languages return `501`; Ruby blocked on Windows. |
 | Runtime dependencies | `backend/pom.xml` | `polyglot`, `js-community` and `python-community` 23.1.12 declared; no TruffleRuby artifact; Java uses the JDK. |
 | Executors | `backend/src/main/java/.../executor/` | `JavaScriptExecutor`, `PythonExecutor` and `JavaExecutor` registered; availability checked at runtime. |
+| Capability API | `backend/src/main/java/.../controller/LanguageController.java` | `GET /api/languages` lists all nine languages with an `available` flag, without starting a runtime. |
+| Admission control | `backend/src/main/java/.../service/ExecutionGate.java` | Fixed-window per-client quota, four concurrent slots, two-second wait, `429` with `Retry-After`, idempotent permit release. |
 | In-process sandbox | `backend/src/main/java/.../runtime/GraalVmSandbox.java` | Fresh context, host/IO/thread/process/native/environment access denied, timeout, output caps, per-language stdin bridge. |
-| Java sandbox | `backend/src/main/java/.../runtime/JavaExecutionSandbox.java` | JDK compile, child JVM with 128 MB heap, cleared environment, temp workspace, timeout kill, `finally` cleanup. |
-| Tests | `backend/src/test/java/.../execution/` and `.../runtime/` | Real GraalJS, GraalPy and Java execution through `/api/execute`; `mvn test` passed 83 tests, 0 failures. |
+| Java sandbox | `backend/src/main/java/.../runtime/JavaExecutionSandbox.java` | JDK compile on a bounded pool with a 20-second timeout, child JVM with 128 MB heap, cleared environment, temp workspace, timeout kill, `finally` cleanup, stale-directory sweep. |
+| Tests | `backend/src/test/java/.../execution/`, `.../runtime/` and `.../service/` | Real GraalJS, GraalPy and Java execution, admission control and language discovery; `mvn test` passed 95 tests, 0 failures. |
 
 ## Appendix B - What this document does not claim
 
 - It does not claim that any language other than JavaScript, Python and Java can be executed today.
 - It does not claim that CPU or memory quotas, process isolation for the in-process engines,
-  container isolation, network namespaces or concurrency limits exist.
+  container isolation or network namespaces exist.
+- It does not claim that admission control is distributed, identity-based or a fairness guarantee;
+  the limits are in-memory, per instance and keyed to the caller's remote address.
 - It does not claim that Java's child process is a security sandbox; guest Java code retains
   filesystem and network access as the backend user.
 - It does not claim that the native-language architecture in section 4 is implemented.
