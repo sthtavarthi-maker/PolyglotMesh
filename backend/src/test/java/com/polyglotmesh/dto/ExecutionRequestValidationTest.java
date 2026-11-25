@@ -66,6 +66,29 @@ class ExecutionRequestValidationTest {
     }
 
     @Test
+    void rejectsNullCode() {
+        ExecutionRequest request = new ExecutionRequest("python", null, "");
+
+        assertThat(invalidFields(request)).containsExactly("code");
+    }
+
+    @Test
+    void acceptsCodeAtTheLimit() {
+        String atLimit = "x".repeat(ExecutionRequest.MAX_CODE_LENGTH);
+        ExecutionRequest request = new ExecutionRequest("python", atLimit, "");
+
+        assertThat(validator.validate(request)).isEmpty();
+    }
+
+    @Test
+    void acceptsInputAtTheLimit() {
+        String atLimit = "x".repeat(ExecutionRequest.MAX_INPUT_LENGTH);
+        ExecutionRequest request = new ExecutionRequest("python", "print(1)", atLimit);
+
+        assertThat(validator.validate(request)).isEmpty();
+    }
+
+    @Test
     void rejectsOversizedCode() {
         String oversized = "x".repeat(ExecutionRequest.MAX_CODE_LENGTH + 1);
         ExecutionRequest request = new ExecutionRequest("python", oversized, "");

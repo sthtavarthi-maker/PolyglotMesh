@@ -122,6 +122,25 @@ class GraalVmPythonSandboxTest {
     }
 
     @Test
+    void blocksEnvironmentAccess() {
+        ExecutionResult result = sandbox.execute("python", """
+                import os
+                leaked = os.environ.get('PATH') or os.getenv('USERNAME')
+                for name in ('posix', 'nt'):
+                    try:
+                        module = __import__(name)
+                        if hasattr(module, 'environ'):
+                            leaked = leaked or module.environ.get('PATH')
+                    except Exception:
+                        pass
+                print('LEAK' if leaked else 'blocked')
+                """, "");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("blocked").doesNotContain("LEAK");
+    }
+
+    @Test
     void keepsGlobalsBetweenExecutionsIsolated() {
         sandbox.execute("python", "leaked = 'yes'", "");
 

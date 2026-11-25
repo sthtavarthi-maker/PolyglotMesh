@@ -27,8 +27,10 @@ import org.springframework.stereotype.Component;
  * <p>Every execution gets a fresh {@link Context}, so globals cannot leak from
  * one request to the next. The context denies host access, host class lookup,
  * file and network IO, process creation, native access, thread creation and
- * environment variables. Output is captured in memory, never inherited from the
- * server's console.</p>
+ * environment variables. GraalPy's Python-visible environment is additionally
+ * cleared, because its posix backend reads the host environment independently of
+ * {@link EnvironmentAccess#NONE}. Output is captured in memory, never inherited
+ * from the server's console.</p>
  *
  * <p>A wall-clock timeout cancels the evaluation via
  * {@link Context#close(boolean)}; the worker thread is a daemon so a stuck guest
@@ -119,6 +121,9 @@ public class GraalVmSandbox implements AutoCloseable {
             String polyglotLanguageId, ByteArrayOutputStream out, ByteArrayOutputStream err) {
         return Context.newBuilder(polyglotLanguageId)
                 .engine(engine.engine())
+                // Explicit even though the default is false: this assertion makes
+                // it impossible to widen host access by accident later.
+                .allowAllAccess(false)
                 .allowHostAccess(HostAccess.NONE)
                 .allowHostClassLookup(className -> false)
                 .allowHostClassLoading(false)
@@ -176,6 +181,29 @@ public class GraalVmSandbox implements AutoCloseable {
         context.eval("python", """
                 import io as __polyglotmesh_io
                 import sys as __polyglotmesh_sys
+
+                # GraalPy's posix backend reads the host environment directly and
+                # is not covered by Context.allowEnvironmentAccess(NONE). Clear the
+                # Python-visible copies before any guest code runs so os.getenv()
+                # and os.environ cannot read backend secrets.
+                import os as __polyglotmesh_os
+                try:
+                    __polyglotmesh_os.environ.clear()
+                except Exception:
+                    pass
+                try:
+                    __polyglotmesh_os.environb.clear()
+                except Exception:
+                    pass
+                __polyglotmesh_mod = None
+                for __polyglotmesh_name in ('posix', 'nt'):
+                    try:
+                        __polyglotmesh_mod = __import__(__polyglotmesh_name)
+                        __polyglotmesh_mod.environ.clear()
+                    except Exception:
+                        pass
+                del __polyglotmesh_name, __polyglotmesh_mod, __polyglotmesh_os
+
                 __polyglotmesh_sys.stdin = __polyglotmesh_io.StringIO(__polyglotmesh_stdin)
                 del __polyglotmesh_io, __polyglotmesh_sys, __polyglotmesh_stdin
                 """);

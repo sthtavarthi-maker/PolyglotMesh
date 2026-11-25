@@ -1,8 +1,11 @@
 # PolyglotMesh Backend
 
 Spring Boot service for PolyglotMesh, the GraalVM multi-language runtime sandbox.
-Week 2 builds this backend incrementally. Day 14 finalizes the service:
-JavaScript (GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
+Week 2 built the service incrementally; Week 3 hardens it. Day 15 adds
+defence-in-depth request validation: a byte-level body limit for `/api/execute`,
+strict JSON that rejects unknown fields, explicit `allowAllAccess(false)` on
+GraalVM contexts, and regression tests for the security boundary. JavaScript
+(GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
 `GET /api/languages` reports capabilities, the execution endpoint is protected by
 per-client rate limits and bounded concurrency, and shutdown is graceful. Every
 other language answers `501` until its adapter exists.
@@ -72,7 +75,7 @@ The service listens on **http://localhost:8080**.
 |---|---|---|---|
 | GET | `/api/health` | Application health for the frontend and smoke tests | `{"status":"UP","application":"PolyglotMesh"}` |
 | GET | `/api/languages` | Read-only capability list | every language with `available` true/false |
-| POST | `/api/execute` | Unified execution endpoint | `200` with the execution result; `501` for a known language without an engine; `429` when over quota/busy; `400` for invalid input |
+| POST | `/api/execute` | Unified execution endpoint | `200` with the execution result; `501` for a known language without an engine; `429` when over quota/busy; `413` for an oversized body; `400` for invalid input |
 | GET | `/actuator/health` | Actuator liveness/readiness | `{"status":"UP"}` |
 | GET | `/actuator/info` | Application and build metadata | app name/description plus `build` version and artifact |
 
@@ -222,7 +225,9 @@ Current behaviour and status codes:
 | Client over its rate limit, or no execution slot free in time | `429 Too Many Requests` | `ApiError` plus a `Retry-After` header |
 | Unknown language id | `400 Bad Request` | `ApiError` listing the known ids |
 | Blank/missing/oversized field | `400 Bad Request` | `ApiError` with the failing field(s) |
+| Unknown JSON field | `400 Bad Request` | `ApiError` (strict JSON contract) |
 | Malformed or missing JSON | `400 Bad Request` | `ApiError` |
+| Body over the byte limit | `413 Payload Too Large` | `ApiError` from the request-size guard |
 | Unexpected server failure | `500 Internal Server Error` | generic `ApiError`, details only in logs |
 
 As of Day 13 **JavaScript, Python and Java** execute. Ruby, C, C++, Rust, Go and
@@ -232,10 +237,34 @@ external toolchains; the embedded engine only serves languages whose Truffle
 artifacts are present. `GET /api/languages` reports the same availability without
 probing each language with a real execution.
 
+## Security controls
+
+The execution API is hardened in layers. None of these layers is a substitute
+for operating-system or container isolation.
+
+| Layer | Control |
+|---|---|
+| Request size | `RequestSizeLimitFilter` rejects a `POST /api/execute` body larger than `polyglotmesh.security.max-request-bytes` (default 1 MiB) with `413` **before** Jackson parses it. It reads at most limit + 1 bytes, so an attacker cannot make the backend buffer an unbounded payload. |
+| JSON contract | `spring.jackson.deserialization.fail-on-unknown-properties=true` rejects any field other than `language`, `code` and `input` with `400`. Malformed or missing JSON also returns `400`. |
+| Field validation | `@NotBlank` rejects null/blank `code` and `language`; `@Size` caps `language` at 32, `code` at 100,000 and `input` at 10,000 characters. Unknown language ids are rejected with `400` before any executor runs. |
+| Error disclosure | `GlobalExceptionHandler` returns one `ApiError` shape and hides stack traces, exception class names and internal messages on `500`. |
+| GraalVM context | A fresh `Context` per request with explicit `allowAllAccess(false)`, `HostAccess.NONE`, host class lookup and loading disabled, `IOAccess.NONE`, and thread, process, native and environment access denied. GraalPy's Python-visible `os.environ`/`posix.environ` copies are cleared before guest code runs, because GraalPy's posix backend reads the host environment independently of `EnvironmentAccess.NONE`. Guest code cannot reach `Java.type`, `Polyglot`, files, sockets or process environment variables. |
+| Response headers | Execution responses carry `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. |
+| Java execution | Compiled in-process and run in a child JVM with a 128 MB heap, a cleared environment, a private working directory and a kill-on-timeout policy. This is **process isolation, not a security sandbox**: guest Java code can still read and write files and open network connections as the backend user. |
+
+Application-level validation protects the API contract and the backend process;
+it does **not** provide operating-system-level sandboxing. The GraalVM context
+restrictions and the Java child JVM reduce accidental damage, but a determined
+guest program is still constrained mainly by the host account and the absence of
+a container boundary.
+
 ## Architecture
 
 ```
-HTTP -> ExecutionController   (validation, status codes)
+HTTP -> RequestSizeLimitFilter  (POST /api/execute body cap; 413 before parsing)
+          |
+          v
+        ExecutionController   (validation, status codes)
           |
           v
         ExecutionGate         (per-client quota + bounded concurrency; 429)
@@ -261,6 +290,10 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
 ```
 
 - `ExecutionRequest` / `ExecutionResponse` / `ApiError` are the API contract.
+- `RequestSizeLimitFilter` runs before Spring MVC on `POST /api/execute`, reads at
+  most the configured limit + 1 bytes, and returns `413` before Jackson parses an
+  oversized body. It also sets `X-Content-Type-Options: nosniff` and
+  `Cache-Control: no-store` on execution responses.
 - `ExecutionResult` stays internal so adapters can evolve without breaking clients.
 - `ExecutionGate` runs before any language is resolved. It enforces a
   fixed-window per-client request quota and a bounded number of concurrent
@@ -300,6 +333,8 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
 | `server.shutdown` | `graceful`; stop accepting new work and let in-flight executions finish |
 | `spring.lifecycle.timeout-per-shutdown-phase` | `30s`; upper bound for the graceful phase (covers one Java compile plus execution) |
 | `management.endpoints.web.exposure.include` | `health,info` |
+| `spring.jackson.deserialization.fail-on-unknown-properties` | `true`; unknown JSON fields are rejected instead of ignored |
+| `polyglotmesh.security.max-request-bytes` | `1048576` (1 MiB); byte limit for a `POST /api/execute` body, enforced before JSON parsing |
 | `polyglotmesh.cors.allowed-origins` | `http://localhost:5173`, `http://127.0.0.1:5173` |
 | `polyglotmesh.graalvm.enabled` | `true`; master switch for the GraalVM engine (JavaScript/Python). Java uses the JDK toolchain independently. |
 | `polyglotmesh.graalvm.execution-timeout` | `5s`; wall-clock limit per request (GraalVM evaluation and Java child JVM) |
@@ -339,14 +374,14 @@ deployed origin to the property when there is a real need.
 | `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health`, `/actuator/info` build metadata, `/api/languages` availability on a real random port |
 | `HealthControllerTest` | Web slice: JSON body, content type, unknown API path |
 | `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
-| `ExecutionRequestValidationTest` | Required fields, blank values, size limits, optional input |
+| `ExecutionRequestValidationTest` | Required fields, null/blank values, size limits, boundary values, optional input |
 | `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping, availability filtering and statuses |
 | `ExecutionGateTest` | Per-client quota, window reset, client isolation, disabled limiting, concurrency rejection, idempotent permit release |
-| `ExecutionControllerTest` | Real gate in the web slice: 501 without executor beans, 400 for invalid/blank/unknown/malformed requests, 405 |
+| `ExecutionControllerTest` | Real gate in the web slice: 501 without executor beans, 400 for invalid/null/blank/unknown/malformed requests and unknown JSON fields, 400 for oversized stdin, 413 for an oversized body (including a trailing-slash path), security headers, 405 |
 | `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details, 429 with `Retry-After` |
 | `GraalVmEngineTest` | Engine availability, installed-language detection (`js`, `python`), provider detection without engine start, disabled mode |
 | `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation |
-| `GraalVmPythonSandboxTest` | Real GraalPy runs: output, `input()`, runtime/syntax errors, host and file denial, timeout cancellation, output cap, context isolation |
+| `GraalVmPythonSandboxTest` | Real GraalPy runs: output, `input()`, runtime/syntax errors, host, file and environment denial, timeout cancellation, output cap, context isolation |
 | `JavaExecutionSandboxTest` | Real JDK compile/run: output, `Scanner` stdin, custom/packaged entry class, compile diagnostics, runtime exception, non-zero exit, `System.exit` isolation, execution and compile timeouts, output cap, stale-directory sweep |
 | `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Ruby |
 | `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, stdin, and runtime errors |
@@ -354,19 +389,22 @@ deployed origin to the property when there is a real need.
 
 ## Verification
 
-Recorded on 24 November 2026 with the packaged jar on the development machine:
+Recorded on the development machine; timings vary, functional results matter.
 
-- `mvn -B -ntp clean verify`: **96 tests, 0 failures, 0 errors, 0 skipped**;
-  `BUILD SUCCESS` in 1 min 46 s; jar written to `target/`.
-- Live smoke test on `http://localhost:8080`: **11/11 checks passed** — health,
-  `/actuator/info` (app name plus build version/artifact), nine-language discovery,
-  JavaScript, Python, Java, Ruby `501`, CORS, bounded-concurrency `429`
-  (`Retry-After: 1`), rate-limit `429` (`Retry-After: 60`), and a read-only
-  endpoint still answering after throttling.
-- After shutdown: no child `java` processes, no `polyglotmesh-java-*` temporary
-  directories, and no `ERROR`/`WARN` lines in the application log.
-
-Timings vary on this host; the functional results are what matter.
+- Day 15 (25 November 2026), `mvn -B -ntp clean verify`: **107 tests, 0 failures,
+  0 errors, 0 skipped**; `BUILD SUCCESS` in 3 min 24 s; jar written to `target/`.
+  The new coverage exercises the `413` body guard (including a trailing-slash
+  path), strict unknown-field rejection, null/empty code, oversized stdin,
+  security response headers, and GraalPy environment-variable denial.
+- Day 14 (24 November 2026), packaged jar: `mvn -B -ntp clean verify` reported
+  96 tests, 0 failures. The live smoke test on `http://localhost:8080` passed
+  **11/11 checks** — health, `/actuator/info` (app name plus build
+  version/artifact), nine-language discovery, JavaScript, Python, Java, Ruby
+  `501`, CORS, bounded-concurrency `429` (`Retry-After: 1`), rate-limit `429`
+  (`Retry-After: 60`), and a read-only endpoint still answering after throttling.
+  After shutdown there were no child `java` processes, no
+  `polyglotmesh-java-*` temporary directories, and no `ERROR`/`WARN` lines in the
+  application log.
 
 ## Current limitations
 
@@ -401,6 +439,13 @@ Timings vary on this host; the functional results are what matter.
   `acquire-timeout` rather than queueing.
 - Request limits remain at the API boundary; output caps, the execution timeout
   and the compile timeout are the executor-level limits available today.
+- The `413` guard caps the whole JSON body, not each field: a request can fit
+  under 1 MiB and still be rejected with `400` for oversized `code` or `input`.
+  The filter buffers the accepted body in memory, so lower
+  `polyglotmesh.security.max-request-bytes` on a memory-constrained host.
+- These are application-level controls. They do not create an operating-system
+  sandbox, a container boundary or a network policy; run the service in a
+  restricted account or container for real isolation.
 - On the stock JDK 21 used here, GraalJS and GraalPy run in Truffle's fallback
   interpreter mode (no runtime compilation). Starting the jar on the installed
   GraalVM JDK enables compiled execution, but that is not required for
@@ -409,6 +454,11 @@ Timings vary on this host; the functional results are what matter.
   host/IO/process access and enforces a timeout, but it does **not** impose a hard
   per-request CPU or memory quota, and it is not a container boundary. Do not
   describe it as production isolation.
+- GraalPy's Python-visible environment is cleared before guest code runs. This
+  closes `os.environ`, `os.getenv`, `posix.environ` and `nt.environ`, but it is a
+  Python-level mitigation, not an OS boundary; native access is separately
+  disabled, so a guest cannot re-read the process environment through a native
+  extension.
 - No authentication, database or persistence.
 - Standard input is language-idiomatic: `readLine()`/`readAll()` for JavaScript,
   real `sys.stdin`/`input()` for Python, and the child's real `System.in` for
