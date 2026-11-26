@@ -1,11 +1,13 @@
 # PolyglotMesh Backend
 
 Spring Boot service for PolyglotMesh, the GraalVM multi-language runtime sandbox.
-Week 2 built the service incrementally; Week 3 hardens it. Day 15 adds
+Week 2 built the service incrementally; Week 3 hardens it. Day 15 added
 defence-in-depth request validation: a byte-level body limit for `/api/execute`,
 strict JSON that rejects unknown fields, explicit `allowAllAccess(false)` on
-GraalVM contexts, and regression tests for the security boundary. JavaScript
-(GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
+GraalVM contexts, and regression tests for the security boundary. Day 16 adds
+bounded resource management: separate setup/execution/compile budgets, a fixed
+sandbox worker pool, tracked-context shutdown and long-running-program tests.
+JavaScript (GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
 `GET /api/languages` reports capabilities, the execution endpoint is protected by
 per-client rate limits and bounded concurrency, and shutdown is graceful. Every
 other language answers `501` until its adapter exists.
@@ -304,13 +306,17 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
   decides availability from the bundled provider classes, so discovery does not
   start the engine or a child JVM.
 - `GraalVmSandbox` creates a new `Context` per execution, captures stdout/stderr,
-  applies the timeout and caps output. It never reuses a guest context.
+  applies the setup and execution budgets separately and caps output. Context
+  creation and stdin installation run on the worker pool under `setup-timeout`;
+  guest evaluation runs under `execution-timeout`. A fixed pool (sized by
+  `max-concurrent-executions`) bounds threads, active contexts are tracked and
+  closed on shutdown, and no guest context is ever reused.
 - `JavaExecutionSandbox` compiles with `javax.tools` on a bounded daemon pool,
   then launches the program in a child JVM with a 128 MB heap, a cleared
-  environment and a private temporary directory. Compilation has its own
-  timeout, running children and temp directories are tracked, timed-out compile
-  directories are removed after a delay, and stale directories from a previous
-  crash are swept at startup.
+  environment and a private temporary directory. Compilation and child execution
+  have independent budgets, running children and temp directories are tracked,
+  timed-out compile directories are removed after a delay, and stale directories
+  from a previous crash are swept at startup.
 - `LanguageController` exposes `GET /api/languages`; `ExecutionService` reports
   every product language with its real availability.
 - `JavaScriptExecutor` and `PythonExecutor` delegate to the GraalVM engine;
@@ -331,26 +337,38 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
 | `server.port` | `8080` (checked free on the development machine) |
 | `spring.application.name` | `PolyglotMesh` |
 | `server.shutdown` | `graceful`; stop accepting new work and let in-flight executions finish |
-| `spring.lifecycle.timeout-per-shutdown-phase` | `30s`; upper bound for the graceful phase (covers one Java compile plus execution) |
+| `spring.lifecycle.timeout-per-shutdown-phase` | `45s`; upper bound for the graceful phase (covers a Java compile plus child run) |
 | `management.endpoints.web.exposure.include` | `health,info` |
 | `spring.jackson.deserialization.fail-on-unknown-properties` | `true`; unknown JSON fields are rejected instead of ignored |
 | `polyglotmesh.security.max-request-bytes` | `1048576` (1 MiB); byte limit for a `POST /api/execute` body, enforced before JSON parsing |
 | `polyglotmesh.cors.allowed-origins` | `http://localhost:5173`, `http://127.0.0.1:5173` |
 | `polyglotmesh.graalvm.enabled` | `true`; master switch for the GraalVM engine (JavaScript/Python). Java uses the JDK toolchain independently. |
-| `polyglotmesh.graalvm.execution-timeout` | `5s`; wall-clock limit per request (GraalVM evaluation and Java child JVM) |
+| `polyglotmesh.graalvm.setup-timeout` | `60s`; context creation plus stdin installation, separate from guest execution |
+| `polyglotmesh.graalvm.execution-timeout` | `5s`; guest-code evaluation only (not context setup, not Java) |
 | `polyglotmesh.graalvm.max-output-chars` | `100000`; stdout/stderr cap |
 | `polyglotmesh.graalvm.max-error-chars` | `20000`; error text cap |
 | `polyglotmesh.execution.rate-limit-enabled` | `true`; per-client request throttling |
 | `polyglotmesh.execution.rate-limit-requests` | `60`; valid execution requests per client per window |
 | `polyglotmesh.execution.rate-limit-window` | `1m`; fixed-window length |
-| `polyglotmesh.execution.max-concurrent-executions` | `4`; execution slots across all clients |
+| `polyglotmesh.execution.max-concurrent-executions` | `4`; execution slots and sandbox worker threads |
 | `polyglotmesh.execution.acquire-timeout` | `2s`; how long a request waits for a slot before `429` |
 | `polyglotmesh.execution.compile-timeout` | `20s`; upper bound for compiling one Java program |
+| `polyglotmesh.execution.java-execution-timeout` | `10s`; upper bound for running the compiled Java child JVM |
 | `polyglotmesh.execution.stale-work-dir-age` | `1h`; abandoned Java temp directories older than this are swept at startup |
 
-The compile timeout is generous because `javac` cold-start and slow disks can take
-several seconds even for a small program; measured 8–13 s per compile on the
-development machine. Lower it only after checking the host.
+The timeouts are deliberately separate because they cover different work:
+
+| Budget | Default | Measured on this host |
+|---|---|---|
+| GraalVM context setup | `60s` | 5.8 s (first JavaScript), 21.6 s (first Python) |
+| GraalVM guest execution | `5s` | ~32 ms warm (JavaScript), ~1.0 s warm (Python) |
+| Java compilation | `20s` | ~3 s for a trivial program; Week 2 saw 8–13 s under load |
+| Java child-JVM execution | `10s` | ~0.8 s warm |
+
+The setup budget is large because the first GraalPy context is expensive; it is
+not charged to the program, and guest code still gets only 5 s. Do not lower the
+compile budget to the execution budget: `javac` cold-start and slow disks need
+the larger allowance. Lower a value only after measuring the host.
 
 CORS applies to `/api/**` only and deliberately does not use `*`, so the API is
 not opened to arbitrary browser origins. Add the Vite preview origin (4173) or a
@@ -361,9 +379,14 @@ deployed origin to the property when there is a real need.
 - `/actuator/info` exposes the application name/description and, because the
   Maven build runs Spring Boot's `build-info` goal, the project version and
   artifact name. It is a safe way to confirm which build is running.
-- Shutdown is graceful: Spring stops accepting new requests, waits up to 30 s
-  for in-flight executions, then tears down the context. `@PreDestroy` then
-  kills any tracked child JVM and deletes tracked temporary directories.
+- Shutdown is graceful: Spring stops accepting new requests, waits up to 45 s
+  for in-flight executions, then tears down the context. `@PreDestroy` closes
+  tracked GraalVM contexts, kills any tracked child JVM and deletes tracked
+  temporary directories.
+- The GraalVM sandbox uses a fixed worker pool sized by
+  `max-concurrent-executions`. It cannot create unbounded threads, and after
+  shutdown new requests fail fast with "execution service is shutting down"
+  instead of hanging.
 - A forced kill (for example `Stop-Process -Force` on Windows) bypasses graceful
   shutdown; the next startup sweeps stale Java work directories.
 
@@ -377,20 +400,34 @@ deployed origin to the property when there is a real need.
 | `ExecutionRequestValidationTest` | Required fields, null/blank values, size limits, boundary values, optional input |
 | `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping, availability filtering and statuses |
 | `ExecutionGateTest` | Per-client quota, window reset, client isolation, disabled limiting, concurrency rejection, idempotent permit release |
+| `ExecutionPropertiesTest` | Safe defaults, and independent compile versus Java run budgets |
+| `GraalVmPropertiesTest` | Setup timeout defaults separately from guest execution |
 | `ExecutionControllerTest` | Real gate in the web slice: 501 without executor beans, 400 for invalid/null/blank/unknown/malformed requests and unknown JSON fields, 400 for oversized stdin, 413 for an oversized body (including a trailing-slash path), security headers, 405 |
 | `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details, 429 with `Retry-After` |
 | `GraalVmEngineTest` | Engine availability, installed-language detection (`js`, `python`), provider detection without engine start, disabled mode |
-| `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation |
+| `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation, rejection after shutdown |
 | `GraalVmPythonSandboxTest` | Real GraalPy runs: output, `input()`, runtime/syntax errors, host, file and environment denial, timeout cancellation, output cap, context isolation |
-| `JavaExecutionSandboxTest` | Real JDK compile/run: output, `Scanner` stdin, custom/packaged entry class, compile diagnostics, runtime exception, non-zero exit, `System.exit` isolation, execution and compile timeouts, output cap, stale-directory sweep |
+| `JavaExecutionSandboxTest` | Real JDK compile/run: output, `Scanner` stdin, custom/packaged entry class, compile diagnostics, runtime exception, non-zero exit, `System.exit` isolation, independent execution and compile timeouts, output cap, stale-directory sweep |
 | `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Ruby |
 | `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, stdin, and runtime errors |
 | `JavaExecutionIntegrationTest` | End-to-end `/api/execute`: Java success, stdin, compile failure, and 501 for Ruby |
+| `ExecutionTimeoutIntegrationTest` | End-to-end runaway programs for JavaScript, Python and Java: the configured budget stops them, and a later execution still succeeds |
 
 ## Verification
 
 Recorded on the development machine; timings vary, functional results matter.
 
+- Day 16 (26 November 2026), `mvn -B -ntp clean verify`: **115 tests, 0 failures,
+  0 errors, 0 skipped**; `BUILD SUCCESS` in 2 min 52 s; jar written to `target/`.
+  New coverage exercises independent setup/execution/compile/Java-run budgets,
+  JavaScript, Python and Java runaway programs stopped at their budget with the
+  service recovering afterwards, and rejection of work after sandbox shutdown.
+  The packaged-jar smoke test passed **10/10 checks** — health, build metadata,
+  nine-language discovery, JavaScript, Python, Java, a JavaScript infinite loop
+  stopped at 5000 ms, a successful execution immediately afterwards, Ruby `501`,
+  and CORS. After shutdown there were no child `java` processes, no
+  `polyglotmesh-java-*` temporary directories, and no `ERROR`/`WARN` lines in the
+  application log.
 - Day 15 (25 November 2026), `mvn -B -ntp clean verify`: **107 tests, 0 failures,
   0 errors, 0 skipped**; `BUILD SUCCESS` in 3 min 24 s; jar written to `target/`.
   The new coverage exercises the `413` body guard (including a trailing-slash
@@ -437,8 +474,13 @@ Recorded on the development machine; timings vary, functional results matter.
 - The `429` path protects capacity, not fairness: a client that stays under its
   quota can still occupy all execution slots, and waiting requests give up after
   `acquire-timeout` rather than queueing.
-- Request limits remain at the API boundary; output caps, the execution timeout
-  and the compile timeout are the executor-level limits available today.
+- Request limits remain at the API boundary; output caps, the setup/execution
+  timeouts and the compile/run timeouts are the executor-level limits available
+  today.
+- Cold GraalPy setup is bounded by `polyglotmesh.graalvm.setup-timeout` (60 s)
+  but still takes ~22 s on this host and is not charged to the program's 5 s
+  execution budget. There is no startup warm-up yet, so the first Python request
+  after a restart is slow.
 - The `413` guard caps the whole JSON body, not each field: a request can fit
   under 1 MiB and still be rejected with `400` for oversized `code` or `input`.
   The filter buffers the accepted body in memory, so lower

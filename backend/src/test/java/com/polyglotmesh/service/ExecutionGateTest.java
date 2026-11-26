@@ -124,6 +124,7 @@ class ExecutionGateTest {
                 maxConcurrent,
                 acquireTimeout,
                 Duration.ofSeconds(5),
+                Duration.ofSeconds(10),
                 Duration.ofHours(1));
     }
 }

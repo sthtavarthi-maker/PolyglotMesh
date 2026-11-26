@@ -81,6 +81,7 @@ class GraalVmEngineTest {
     }
 
     private static GraalVmProperties properties(boolean enabled) {
-        return new GraalVmProperties(enabled, Duration.ofSeconds(3), 10_000, 2_000);
+        return new GraalVmProperties(
+                enabled, Duration.ofSeconds(60), Duration.ofSeconds(3), 10_000, 2_000);
     }
 }

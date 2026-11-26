@@ -199,7 +199,8 @@ class JavaExecutionSandboxTest {
     @Timeout(30)
     void cancelsInfiniteLoops() {
         JavaExecutionSandbox quick = new JavaExecutionSandbox(
-                properties(Duration.ofSeconds(1), 1_000), executionProperties());
+                properties(Duration.ofSeconds(15), 1_000),
+                executionProperties(Duration.ofSeconds(30), Duration.ofSeconds(1)));
         try {
             long startedAt = System.nanoTime();
             ExecutionResult result = quick.execute("""
@@ -225,7 +226,7 @@ class JavaExecutionSandboxTest {
     void cancelsCompilationThatExceedsItsBudget() {
         JavaExecutionSandbox impatient = new JavaExecutionSandbox(
                 properties(Duration.ofSeconds(15), 10_000),
-                executionProperties(Duration.ofNanos(1)));
+                executionProperties(Duration.ofNanos(1), Duration.ofSeconds(10)));
         try {
             ExecutionResult result = impatient.execute("""
                     public class Main {
@@ -259,7 +260,8 @@ class JavaExecutionSandboxTest {
     }
 
     private static GraalVmProperties properties(Duration timeout, int maxOutputChars) {
-        return new GraalVmProperties(true, timeout, maxOutputChars, 2_000);
+        return new GraalVmProperties(
+                true, Duration.ofSeconds(60), timeout, maxOutputChars, 2_000);
     }
 
     private static ExecutionProperties executionProperties() {
@@ -267,6 +269,11 @@ class JavaExecutionSandboxTest {
     }
 
     private static ExecutionProperties executionProperties(Duration compileTimeout) {
+        return executionProperties(compileTimeout, Duration.ofSeconds(10));
+    }
+
+    private static ExecutionProperties executionProperties(
+            Duration compileTimeout, Duration javaExecutionTimeout) {
         return new ExecutionProperties(
                 true,
                 60,
@@ -274,6 +281,7 @@ class JavaExecutionSandboxTest {
                 4,
                 Duration.ofSeconds(2),
                 compileTimeout,
+                javaExecutionTimeout,
                 Duration.ofHours(1));
     }
 }

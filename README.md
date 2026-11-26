@@ -6,10 +6,12 @@ PolyglotMesh is built on **Java 21 + GraalVM** and uses the **GraalVM Polyglot A
 languages inside a single JVM process — no external execution service, container runtime or third-party
 judge is involved.
 
-> **Project status:** Week 2 — backend complete (Days 8–14).
-> The REST backend executes Java, Python and JavaScript for real, reports available languages, and
-> enforces rate/concurrency limits. The frontend is not wired to the backend yet; execution is
-> currently available through the REST API. The other six editor languages remain editor-only.
+> **Project status:** Week 3 — backend hardening in progress (Days 15–16).
+> The REST backend executes Java, Python and JavaScript for real, reports available languages,
+> enforces rate/concurrency limits, validates and size-limits requests, and bounds setup,
+> execution, compilation and Java run time separately. The frontend is not wired to the backend
+> yet; execution is currently available through the REST API. The other six editor languages
+> remain editor-only.
 
 ---
 
@@ -116,10 +118,12 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 | 12 | Real Java execution with the JDK compiler and an isolated child JVM |
 | 13 | Language discovery (`GET /api/languages`), admission control, compile timeout and cleanup |
 | 14 | Operational finalization: graceful shutdown, build metadata, final verification and documentation |
+| 15 | Backend security hardening: body-size guard, strict JSON, sandbox assertions and security tests |
+| 16 | Execution resource management: separate setup/execution/compile budgets, bounded sandbox pool and cleanup |
 
-Week 2 is complete for the backend. Java, Python and JavaScript execute; Ruby, C, C++, Rust, Go
-and R remain editor-only and return an honest `501`. Further weekly plans are added as the project
-progresses.
+Week 2 is complete for the backend. Week 3 hardens it. Java, Python and JavaScript execute;
+Ruby, C, C++, Rust, Go and R remain editor-only and return an honest `501`. Further weekly plans
+are added as the project progresses.
 
 ## License
 

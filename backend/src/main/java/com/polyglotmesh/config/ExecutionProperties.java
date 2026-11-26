@@ -17,6 +17,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param maxConcurrentExecutions execution slots available at the same time
  * @param acquireTimeout          how long a request waits for a free slot before 429
  * @param compileTimeout          upper bound for compiling one Java program
+ * @param javaExecutionTimeout    upper bound for running one compiled Java program in its
+ *                                child JVM; kept separate from compilation because a cold
+ *                                JDK toolchain needs far longer to compile than to run
  * @param staleWorkDirAge         age after which abandoned temp directories are swept
  */
 @ConfigurationProperties(prefix = "polyglotmesh.execution")
@@ -27,6 +30,7 @@ public record ExecutionProperties(
         int maxConcurrentExecutions,
         Duration acquireTimeout,
         Duration compileTimeout,
+        Duration javaExecutionTimeout,
         Duration staleWorkDirAge) {
 
     private static final int DEFAULT_RATE_LIMIT_REQUESTS = 60;
@@ -34,6 +38,7 @@ public record ExecutionProperties(
     private static final int DEFAULT_MAX_CONCURRENT_EXECUTIONS = 4;
     private static final Duration DEFAULT_ACQUIRE_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration DEFAULT_COMPILE_TIMEOUT = Duration.ofSeconds(20);
+    private static final Duration DEFAULT_JAVA_EXECUTION_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration DEFAULT_STALE_WORK_DIR_AGE = Duration.ofHours(1);
 
     public ExecutionProperties {
@@ -55,6 +60,11 @@ public record ExecutionProperties(
         if (compileTimeout == null || compileTimeout.isZero() || compileTimeout.isNegative()) {
             compileTimeout = DEFAULT_COMPILE_TIMEOUT;
         }
+        if (javaExecutionTimeout == null
+                || javaExecutionTimeout.isZero()
+                || javaExecutionTimeout.isNegative()) {
+            javaExecutionTimeout = DEFAULT_JAVA_EXECUTION_TIMEOUT;
+        }
         if (staleWorkDirAge == null || staleWorkDirAge.isZero() || staleWorkDirAge.isNegative()) {
             staleWorkDirAge = DEFAULT_STALE_WORK_DIR_AGE;
         }
@@ -75,6 +85,10 @@ public record ExecutionProperties(
 
     public long compileTimeoutNanos() {
         return compileTimeout.toNanos();
+    }
+
+    public long javaExecutionTimeoutMillis() {
+        return javaExecutionTimeout.toMillis();
     }
 
     public long staleWorkDirAgeMillis() {

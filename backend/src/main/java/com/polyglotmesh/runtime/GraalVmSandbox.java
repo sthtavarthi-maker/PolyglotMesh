@@ -1,16 +1,21 @@
 package com.polyglotmesh.runtime;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
 import jakarta.annotation.PreDestroy;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.EnvironmentAccess;
 import org.graalvm.polyglot.HostAccess;
@@ -32,11 +37,21 @@ import org.springframework.stereotype.Component;
  * {@link EnvironmentAccess#NONE}. Output is captured in memory, never inherited
  * from the server's console.</p>
  *
+ * <p>Setup and guest execution have separate budgets. Creating the first
+ * GraalPy context on a cold JVM takes far longer (measured tens of seconds on
+ * the development host) than the guest program itself, so
+ * {@code polyglotmesh.graalvm.setup-timeout} covers context creation and stdin
+ * installation while {@code polyglotmesh.graalvm.execution-timeout} covers only
+ * the evaluation. Both budgets have a hard upper bound, and the worker pool is
+ * fixed at the same size as the admission-control concurrency limit, so a
+ * misconfigured caller cannot create unbounded sandbox threads.</p>
+ *
  * <p>A wall-clock timeout cancels the evaluation via
  * {@link Context#close(boolean)}; the worker thread is a daemon so a stuck guest
- * cannot keep the JVM alive. This is defence in depth, not a hardened container:
- * the code still runs inside the backend JVM, so CPU and memory limits are
- * documented as later work rather than claimed.</p>
+ * cannot keep the JVM alive. Tracked contexts are also closed on shutdown. This
+ * is defence in depth, not a hardened container: the code still runs inside the
+ * backend JVM, so CPU and memory limits are documented as later work rather than
+ * claimed.</p>
  */
 @Component
 public class GraalVmSandbox implements AutoCloseable {
@@ -49,12 +64,19 @@ public class GraalVmSandbox implements AutoCloseable {
     private final GraalVmEngine engine;
     private final GraalVmProperties properties;
     private final ExecutorService workers;
+    private final Set<Context> activeContexts = ConcurrentHashMap.newKeySet();
 
-    public GraalVmSandbox(GraalVmEngine engine, GraalVmProperties properties) {
+    public GraalVmSandbox(
+            GraalVmEngine engine,
+            GraalVmProperties properties,
+            ExecutionProperties executionProperties) {
         this.engine = engine;
         this.properties = properties;
-        this.workers = Executors.newCachedThreadPool(runnable -> {
-            Thread thread = new Thread(runnable, "polyglotmesh-sandbox");
+        int workerCount = Math.max(1, executionProperties.maxConcurrentExecutions());
+        AtomicInteger counter = new AtomicInteger();
+        this.workers = Executors.newFixedThreadPool(workerCount, runnable -> {
+            Thread thread = new Thread(
+                    runnable, "polyglotmesh-sandbox-" + counter.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         });
@@ -74,14 +96,18 @@ public class GraalVmSandbox implements AutoCloseable {
         Context context = null;
         Future<?> evaluation = null;
         try {
-            context = newContext(polyglotLanguageId, out, err);
-            installStandardInput(context, polyglotLanguageId, stdin == null ? "" : stdin);
+            context = createContext(
+                    polyglotLanguageId, stdin == null ? "" : stdin, out, err);
+            activeContexts.add(context);
 
             Context evaluating = context;
             evaluation = workers.submit(() -> evaluating.eval(polyglotLanguageId, source));
             evaluation.get(properties.timeoutMillis(), TimeUnit.MILLISECONDS);
 
             return ExecutionResult.success(captured(out, err), elapsedMillis(startedAt));
+        } catch (SetupAbortedException aborted) {
+            return ExecutionResult.failure(
+                    captured(out, err), aborted.getMessage(), elapsedMillis(startedAt));
         } catch (TimeoutException timeout) {
             cancel(evaluation, context);
             return ExecutionResult.failure(
@@ -100,8 +126,13 @@ public class GraalVmSandbox implements AutoCloseable {
                     captured(out, err),
                     "Execution was interrupted.",
                     elapsedMillis(startedAt));
+        } catch (RejectedExecutionException rejected) {
+            return ExecutionResult.failure(
+                    captured(out, err),
+                    "The execution service is shutting down.",
+                    elapsedMillis(startedAt));
         } catch (PolyglotException exception) {
-            // Raised on this thread while installing stdin, not by the guest.
+            // Raised while creating or preparing the context, not by the guest.
             return ExecutionResult.failure(
                     captured(out, err),
                     describe(exception),
@@ -113,7 +144,62 @@ public class GraalVmSandbox implements AutoCloseable {
                     "Execution failed on the server.",
                     elapsedMillis(startedAt));
         } finally {
+            if (context != null) {
+                activeContexts.remove(context);
+            }
             closeQuietly(context);
+        }
+    }
+
+    /**
+     * Creates the context and installs stdin on a worker thread, bounded by
+     * {@code setup-timeout}. Returns only after ownership of the context has been
+     * handed to the caller; on timeout the worker either closes the context
+     * itself or hands it back for the caller to close.
+     */
+    private Context createContext(
+            String polyglotLanguageId,
+            String stdin,
+            ByteArrayOutputStream out,
+            ByteArrayOutputStream err) {
+        Handoff handoff = new Handoff();
+        Future<Context> setup = workers.submit(() -> {
+            Context created = newContext(polyglotLanguageId, out, err);
+            try {
+                installStandardInput(created, polyglotLanguageId, stdin);
+            } catch (RuntimeException | Error failure) {
+                handoff.abandon();
+                closeQuietly(created);
+                throw failure;
+            }
+            if (!handoff.offer(created)) {
+                // The caller already timed out; this task still owns the context.
+                closeQuietly(created);
+            }
+            return created;
+        });
+
+        try {
+            return setup.get(properties.setupTimeoutMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            setup.cancel(true);
+            closeQuietly(handoff.abandon());
+            throw new SetupAbortedException(
+                    "Execution setup timed out after " + properties.setupTimeoutMillis() + " ms.");
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException("Execution setup failed", cause);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            setup.cancel(true);
+            closeQuietly(handoff.abandon());
+            throw new SetupAbortedException("Execution was interrupted.");
         }
     }
 
@@ -262,9 +348,50 @@ public class GraalVmSandbox implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
+    /**
+     * Cancels contexts that are still running, then stops the worker pool. The
+     * engine itself is closed by {@link GraalVmEngine}.
+     */
     @PreDestroy
     @Override
     public void close() {
+        for (Context context : activeContexts) {
+            closeQuietly(context);
+        }
+        activeContexts.clear();
         workers.shutdownNow();
+    }
+
+    /** Signals that context setup did not finish within its budget. */
+    private static final class SetupAbortedException extends RuntimeException {
+
+        private SetupAbortedException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Atomic ownership transfer between the setup task and the request thread.
+     * Exactly one side closes the context when the setup times out.
+     */
+    private static final class Handoff {
+
+        private Context context;
+        private boolean abandoned;
+
+        synchronized boolean offer(Context candidate) {
+            if (abandoned) {
+                return false;
+            }
+            context = candidate;
+            return true;
+        }
+
+        synchronized Context abandon() {
+            abandoned = true;
+            Context current = context;
+            context = null;
+            return current;
+        }
     }
 }

@@ -2,6 +2,7 @@ package com.polyglotmesh.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
 import java.time.Duration;
@@ -22,7 +23,8 @@ class GraalVmPythonSandboxTest {
     @BeforeAll
     static void setUp() {
         engine = new GraalVmEngine(properties(Duration.ofSeconds(10), 10_000));
-        sandbox = new GraalVmSandbox(engine, properties(Duration.ofSeconds(10), 10_000));
+        sandbox = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(10), 10_000), executionProperties());
     }
 
     @AfterAll
@@ -153,8 +155,8 @@ class GraalVmPythonSandboxTest {
 
     @Test
     void truncatesLargeOutput() {
-        GraalVmSandbox small =
-                new GraalVmSandbox(engine, properties(Duration.ofSeconds(10), 50));
+        GraalVmSandbox small = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(10), 50), executionProperties());
         try {
             ExecutionResult result = small.execute("python", "print('x' * 500)", "");
 
@@ -169,8 +171,8 @@ class GraalVmPythonSandboxTest {
     @Test
     @Timeout(30)
     void cancelsInfiniteLoops() {
-        GraalVmSandbox quick =
-                new GraalVmSandbox(engine, properties(Duration.ofSeconds(1), 1_000));
+        GraalVmSandbox quick = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(1), 1_000), executionProperties());
         try {
             long startedAt = System.nanoTime();
             ExecutionResult result = quick.execute("python", "while True:\n    pass", "");
@@ -185,6 +187,19 @@ class GraalVmPythonSandboxTest {
     }
 
     private static GraalVmProperties properties(Duration timeout, int maxOutputChars) {
-        return new GraalVmProperties(true, timeout, maxOutputChars, 2_000);
+        return new GraalVmProperties(
+                true, Duration.ofSeconds(60), timeout, maxOutputChars, 2_000);
+    }
+
+    private static ExecutionProperties executionProperties() {
+        return new ExecutionProperties(
+                true,
+                60,
+                Duration.ofMinutes(1),
+                4,
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(10),
+                Duration.ofHours(1));
     }
 }

@@ -2,6 +2,7 @@ package com.polyglotmesh.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
 import java.time.Duration;
@@ -23,7 +24,8 @@ class GraalVmSandboxTest {
     @BeforeAll
     static void setUp() {
         engine = new GraalVmEngine(properties(Duration.ofSeconds(3), 10_000));
-        sandbox = new GraalVmSandbox(engine, properties(Duration.ofSeconds(3), 10_000));
+        sandbox = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(3), 10_000), executionProperties());
     }
 
     @AfterAll
@@ -75,8 +77,8 @@ class GraalVmSandboxTest {
 
     @Test
     @Timeout(15)
-    void cancelsInfiniteLoops() {
-        GraalVmSandbox quick = new GraalVmSandbox(engine, properties(Duration.ofMillis(300), 1_000));
+    void cancelsInfiniteLoops() {        GraalVmSandbox quick = new GraalVmSandbox(
+                engine, properties(Duration.ofMillis(300), 1_000), executionProperties());
         try {
             long startedAt = System.nanoTime();
             ExecutionResult result = quick.execute("js", "while (true) {}", "");
@@ -92,7 +94,8 @@ class GraalVmSandboxTest {
 
     @Test
     void truncatesLargeOutput() {
-        GraalVmSandbox small = new GraalVmSandbox(engine, properties(Duration.ofSeconds(3), 50));
+        GraalVmSandbox small = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(3), 50), executionProperties());
         try {
             ExecutionResult result =
                     small.execute("js", "console.log('x'.repeat(500));", "");
@@ -146,7 +149,33 @@ class GraalVmSandboxTest {
         assertThat(result.error()).contains("after");
     }
 
+    @Test
+    @Timeout(10)
+    void rejectsExecutionsAfterShutdown() {
+        GraalVmSandbox closed = new GraalVmSandbox(
+                engine, properties(Duration.ofSeconds(1), 1_000), executionProperties());
+        closed.close();
+
+        ExecutionResult result = closed.execute("js", "console.log('too late');", "");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("shutting down");
+    }
+
     private static GraalVmProperties properties(Duration timeout, int maxOutputChars) {
-        return new GraalVmProperties(true, timeout, maxOutputChars, 2_000);
+        return new GraalVmProperties(
+                true, Duration.ofSeconds(60), timeout, maxOutputChars, 2_000);
+    }
+
+    private static ExecutionProperties executionProperties() {
+        return new ExecutionProperties(
+                true,
+                60,
+                Duration.ofMinutes(1),
+                4,
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(10),
+                Duration.ofHours(1));
     }
 }

@@ -58,9 +58,12 @@ import org.springframework.stereotype.Component;
  *
  * <p>Compilation is bounded by {@code polyglotmesh.execution.compile-timeout}
  * and runs on a small daemon pool. A pathological compiler task cannot hold the
- * request thread, and the bounded pool prevents runaway compile threads.
- * Temporary directories and child processes are tracked so shutdown can clean
- * them up; stale directories from a previous crash are swept at startup.</p>
+ * request thread, and the bounded pool prevents runaway compile threads. The
+ * compiled program then gets its own budget,
+ * {@code polyglotmesh.execution.java-execution-timeout}, so the much larger
+ * compile allowance never becomes the program's run time. Temporary directories
+ * and child processes are tracked so shutdown can clean them up; stale
+ * directories from a previous crash are swept at startup.</p>
  */
 @Component
 public class JavaExecutionSandbox {
@@ -286,7 +289,8 @@ public class JavaExecutionSandbox {
             }
 
             boolean finished =
-                    process.waitFor(properties.timeoutMillis(), TimeUnit.MILLISECONDS);
+                    process.waitFor(executionProperties.javaExecutionTimeoutMillis(),
+                            TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroyForcibly();
                 process.waitFor(2, TimeUnit.SECONDS);
@@ -301,7 +305,8 @@ public class JavaExecutionSandbox {
             if (!finished) {
                 return ExecutionResult.failure(
                         output,
-                        "Execution timed out after " + properties.timeoutMillis() + " ms.",
+                        "Execution timed out after "
+                                + executionProperties.javaExecutionTimeoutMillis() + " ms.",
                         elapsed);
             }
             int exitCode = process.exitValue();
