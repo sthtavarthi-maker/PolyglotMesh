@@ -13,6 +13,7 @@ import com.polyglotmesh.exception.ExecutionUnavailableException;
 import com.polyglotmesh.exception.UnsupportedLanguageException;
 import com.polyglotmesh.executor.CodeExecutor;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import com.polyglotmesh.model.Language;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -27,7 +28,8 @@ class ExecutionServiceTest {
         CodeExecutor executor = executorFor(Language.JAVASCRIPT);
         ExecutionRequest request = request("javascript");
         when(executor.isAvailable()).thenReturn(true);
-        when(executor.execute(request)).thenReturn(ExecutionResult.success("Hello", 12));
+        when(executor.execute(request))
+                .thenReturn(ExecutionResult.success("Hello", "warning\n", 12));
 
         ExecutionService service = new ExecutionService(List.of(executor));
         ExecutionResponse response = service.execute(request);
@@ -35,7 +37,9 @@ class ExecutionServiceTest {
         assertThat(response.success()).isTrue();
         assertThat(response.language()).isEqualTo("javascript");
         assertThat(response.output()).isEqualTo("Hello");
+        assertThat(response.stderr()).isEqualTo("warning\n");
         assertThat(response.error()).isNull();
+        assertThat(response.status()).isEqualTo(ExecutionStatus.SUCCESS);
         assertThat(response.executionTimeMs()).isEqualTo(12);
         verify(executor).execute(request);
     }
@@ -45,7 +49,8 @@ class ExecutionServiceTest {
         CodeExecutor executor = executorFor(Language.PYTHON);
         ExecutionRequest request = request("python");
         when(executor.isAvailable()).thenReturn(true);
-        when(executor.execute(request)).thenReturn(ExecutionResult.failure("SyntaxError", 3));
+        when(executor.execute(request)).thenReturn(ExecutionResult.failure(
+                ExecutionStatus.SYNTAX_ERROR, "", "", "SyntaxError", 3));
 
         ExecutionService service = new ExecutionService(List.of(executor));
         ExecutionResponse response = service.execute(request);
@@ -53,7 +58,9 @@ class ExecutionServiceTest {
         assertThat(response.success()).isFalse();
         assertThat(response.language()).isEqualTo("python");
         assertThat(response.output()).isEmpty();
+        assertThat(response.stderr()).isEmpty();
         assertThat(response.error()).isEqualTo("SyntaxError");
+        assertThat(response.status()).isEqualTo(ExecutionStatus.SYNTAX_ERROR);
         assertThat(response.executionTimeMs()).isEqualTo(3);
     }
 

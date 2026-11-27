@@ -7,10 +7,13 @@ strict JSON that rejects unknown fields, explicit `allowAllAccess(false)` on
 GraalVM contexts, and regression tests for the security boundary. Day 16 adds
 bounded resource management: separate setup/execution/compile budgets, a fixed
 sandbox worker pool, tracked-context shutdown and long-running-program tests.
-JavaScript (GraalJS), Python (GraalPy) and Java (JDK toolchain) execute for real,
-`GET /api/languages` reports capabilities, the execution endpoint is protected by
-per-client rate limits and bounded concurrency, and shutdown is graceful. Every
-other language answers `501` until its adapter exists.
+Day 17 standardises execution diagnostics: stdout and stderr are separate, every
+result carries a `status` classification, compiler diagnostics are preserved and
+internal stack traces are never returned. JavaScript (GraalJS), Python (GraalPy)
+and Java (JDK toolchain) execute for real, `GET /api/languages` reports
+capabilities, the execution endpoint is protected by per-client rate limits and
+bounded concurrency, and shutdown is graceful. Every other language answers
+`501` until its adapter exists.
 
 ## Stack
 
@@ -103,13 +106,48 @@ A successful execution returns:
   "language": "javascript",
   "output": "Hello PolyglotMesh\n",
   "error": null,
+  "stderr": "",
+  "status": "SUCCESS",
   "executionTimeMs": 15
 }
 ```
 
-`output` is everything the program wrote to stdout and stderr, including its own
-newlines. `error` is `null` on success and carries the compile/runtime error
-otherwise; output produced before a failure is still returned.
+`output` is standard output only and `stderr` is standard error only; both keep
+the program's own newlines. `error` is `null` on success and carries the
+diagnostic otherwise (compiler output, exception message or timeout notice).
+`status` classifies the outcome and is always present. Output produced before a
+failure is still returned.
+
+A failed program still returns HTTP `200` with `success: false`: the request was
+valid and the response is a real execution result, not an API error. For example:
+
+```json
+{
+  "success": false,
+  "language": "python",
+  "output": "",
+  "error": "Traceback (most recent call last): ... ZeroDivisionError: division by zero",
+  "stderr": "",
+  "status": "RUNTIME_ERROR",
+  "executionTimeMs": 42
+}
+```
+
+| `status` | Meaning |
+|---|---|
+| `SUCCESS` | The program compiled (when applicable) and exited successfully |
+| `COMPILE_ERROR` | The compiler rejected the source; `error` carries its diagnostics |
+| `SYNTAX_ERROR` | The interpreter rejected the source before running it |
+| `RUNTIME_ERROR` | The program started but raised an exception or exited non-zero |
+| `TIMEOUT` | A setup, compilation or execution budget was exceeded |
+| `CANCELLED` | The request was interrupted or the service is shutting down |
+| `INTERNAL_ERROR` | The server failed for a reason that is not the program's fault; the message is generic |
+
+API-level failures keep their existing HTTP status and `ApiError` shape:
+unknown language `400`, malformed JSON or validation failures `400`, oversized
+body `413`, known language without a runtime `501`, quota/concurrency `429`, and
+unexpected server failures `500`. None of those responses include a `success`,
+`output`, `stderr` or execution `status` field; they use the error shape instead.
 
 ### Language discovery
 
@@ -150,8 +188,9 @@ console.log(`Hello, ${name}!`);
 
 Each request gets a fresh `Context`, so globals never leak between runs. The
 sandbox denies host access (`Java.type`, `Polyglot`), file and network IO, process
-creation, native access, thread creation and environment variables. A wall-clock
-timeout (default 5 s) cancels infinite loops, and output/error text is capped.
+creation, native access, thread creation and environment variables. `console.log`
+writes to `output` and `console.error` writes to `stderr`. A wall-clock timeout
+(default 5 s) cancels infinite loops, and output/error text is capped.
 
 `executionTimeMs` covers context creation and evaluation. The first request after
 startup also pays the one-off GraalVM engine start (a few seconds here), so the
@@ -170,8 +209,9 @@ print(f"Hello, {name}! " * count)
 
 The same sandbox rules apply: a fresh context per request, no host access, no
 file or network IO, no process or thread creation, the wall-clock timeout and
-capped output. GraalPy starts more slowly than GraalJS in interpreter mode, so
-the first Python request after startup can take several seconds.
+capped output. `print()` writes to `output` and `sys.stderr` writes to `stderr`.
+GraalPy starts more slowly than GraalJS in interpreter mode, so the first Python
+request after startup can take several seconds.
 
 ### Java (executable)
 
@@ -195,10 +235,12 @@ public class Main {
 ```
 
 Standard input is the child's real `System.in`, so `Scanner`, `BufferedReader`
-and `System.in.read()` work normally. `System.out` is `output`; a non-zero exit
-status or a runtime exception makes `success` false and puts the stderr text in
-`error`, while output printed before the failure is still returned. Output line
-endings are normalised to `\n` so the API behaves the same on every host.
+and `System.in.read()` work normally. `System.out` is `output` and `System.err`
+is `stderr`. A non-zero exit status or a runtime exception makes `success` false,
+classifies the result `RUNTIME_ERROR` and puts the diagnostic in `error`, while
+output printed before the failure is still returned. Compiler diagnostics keep
+their line numbers and are classified `COMPILE_ERROR`. Output line endings are
+normalised to `\n` so the API behaves the same on every host.
 
 The child JVM gets `-Xmx128m`, a private working directory, its own temporary
 directory and a cleared environment; it is killed when the execution timeout
@@ -222,7 +264,7 @@ Current behaviour and status codes:
 
 | Situation | Status | Body |
 |---|---|---|
-| JavaScript, Python or Java request within quota | `200 OK` | `ExecutionResponse`; `success` is false for compile/runtime errors |
+| JavaScript, Python or Java request within quota | `200 OK` | `ExecutionResponse` with `status`; `success` is false for compile/runtime/timeout outcomes |
 | Valid request, known language without an engine | `501 Not Implemented` | `ApiError` explaining that no engine is available yet |
 | Client over its rate limit, or no execution slot free in time | `429 Too Many Requests` | `ApiError` plus a `Retry-After` header |
 | Unknown language id | `400 Bad Request` | `ApiError` listing the known ids |
@@ -232,7 +274,7 @@ Current behaviour and status codes:
 | Body over the byte limit | `413 Payload Too Large` | `ApiError` from the request-size guard |
 | Unexpected server failure | `500 Internal Server Error` | generic `ApiError`, details only in logs |
 
-As of Day 13 **JavaScript, Python and Java** execute. Ruby, C, C++, Rust, Go and
+As of Day 17 **JavaScript, Python and Java** execute. Ruby, C, C++, Rust, Go and
 R still return an honest `501` — no output is simulated for them. Ruby is blocked
 by TruffleRuby's lack of Windows support on this machine; C/C++/Rust/Go/R need
 external toolchains; the embedded engine only serves languages whose Truffle
@@ -398,25 +440,45 @@ deployed origin to the property when there is a real need.
 | `HealthControllerTest` | Web slice: JSON body, content type, unknown API path |
 | `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
 | `ExecutionRequestValidationTest` | Required fields, null/blank values, size limits, boundary values, optional input |
-| `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping, availability filtering and statuses |
+| `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping (stdout, stderr, diagnostic, status), availability filtering and statuses |
+| `ExecutionResultTest` | Internal result invariants: separate streams, explicit status, default classification, rejection of inconsistent results |
+| `ExecutionResponseTest` | Public DTO mapping of language, stdout, stderr, diagnostic, status and timing |
 | `ExecutionGateTest` | Per-client quota, window reset, client isolation, disabled limiting, concurrency rejection, idempotent permit release |
 | `ExecutionPropertiesTest` | Safe defaults, and independent compile versus Java run budgets |
 | `GraalVmPropertiesTest` | Setup timeout defaults separately from guest execution |
 | `ExecutionControllerTest` | Real gate in the web slice: 501 without executor beans, 400 for invalid/null/blank/unknown/malformed requests and unknown JSON fields, 400 for oversized stdin, 413 for an oversized body (including a trailing-slash path), security headers, 405 |
 | `GlobalExceptionHandlerTest` | Generic 500 that does not leak exception details, 429 with `Retry-After` |
 | `GraalVmEngineTest` | Engine availability, installed-language detection (`js`, `python`), provider detection without engine start, disabled mode |
-| `GraalVmSandboxTest` | Real GraalJS runs: output capture, runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation, rejection after shutdown |
-| `GraalVmPythonSandboxTest` | Real GraalPy runs: output, `input()`, runtime/syntax errors, host, file and environment denial, timeout cancellation, output cap, context isolation |
-| `JavaExecutionSandboxTest` | Real JDK compile/run: output, `Scanner` stdin, custom/packaged entry class, compile diagnostics, runtime exception, non-zero exit, `System.exit` isolation, independent execution and compile timeouts, output cap, stale-directory sweep |
-| `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure, stdin, and 501 for Ruby |
-| `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, stdin, and runtime errors |
-| `JavaExecutionIntegrationTest` | End-to-end `/api/execute`: Java success, stdin, compile failure, and 501 for Ruby |
-| `ExecutionTimeoutIntegrationTest` | End-to-end runaway programs for JavaScript, Python and Java: the configured budget stops them, and a later execution still succeeds |
+| `GraalVmSandboxTest` | Real GraalJS runs: separate stdout/stderr, status classification (success, syntax, runtime, timeout, cancelled), runtime/syntax errors, host-access denial, timeout cancellation, output cap, stdin helpers, context isolation, rejection after shutdown |
+| `GraalVmPythonSandboxTest` | Real GraalPy runs: separate stdout/stderr, status classification, `input()`, runtime/syntax errors, host, file and environment denial, timeout cancellation, output cap, context isolation |
+| `JavaExecutionSandboxTest` | Real JDK compile/run: separate stdout/stderr, status classification (success, compile, runtime, timeout), `Scanner` stdin, custom/packaged entry class, compile diagnostics, runtime exception, non-zero exit, `System.exit` isolation, independent execution and compile timeouts, output cap, stale-directory sweep |
+| `JavaScriptExecutionIntegrationTest` | End-to-end `/api/execute`: JavaScript success/failure with `status`, separate stderr, stdin, and 501 for Ruby |
+| `PythonExecutionIntegrationTest` | End-to-end `/api/execute`: Python success, separate stderr, stdin, runtime errors with `status` |
+| `JavaExecutionIntegrationTest` | End-to-end `/api/execute`: Java success, separate stderr, stdin, compile failure with `COMPILE_ERROR`, and 501 for Ruby |
+| `ExecutionTimeoutIntegrationTest` | End-to-end runaway programs for JavaScript, Python and Java: the configured budget stops them with `TIMEOUT`, and a later execution still succeeds |
+| `ExecutionDiagnosticsIntegrationTest` | End-to-end classification of JavaScript/Python syntax errors, Java compile and runtime errors, compiler line numbers, absence of backend stack traces, and the 400/501 `ApiError` contract |
 
 ## Verification
 
 Recorded on the development machine; timings vary, functional results matter.
 
+- Day 17 (27 November 2026), `mvn -B -ntp clean verify`: **144 tests, 0 failures,
+  0 errors, 0 skipped**; `BUILD SUCCESS` in 12 min 58 s; jar written to `target/`.
+  The new coverage exercises the internal result invariants (separate streams,
+  explicit status, inconsistent results rejected), public DTO mapping, and
+  end-to-end classification: JavaScript/Python syntax errors, Java compile and
+  runtime errors, preserved compiler line numbers, separate stdout/stderr,
+  absence of backend stack traces, and the unchanged `400`/`501` `ApiError`
+  contract. The suite ran under heavy memory pressure on this host, which made
+  the child-JVM tests slow but did not change the result.
+  The packaged-jar smoke test passed **18/18 checks** — health, build metadata,
+  nine-language discovery, JavaScript success with separate stderr, JavaScript
+  syntax/runtime classification, Python success/runtime, Java success/compile
+  error/runtime error with partial stdout, a JavaScript infinite loop stopped at
+  ~5.1 s with `TIMEOUT`, successful recovery immediately afterwards, unknown
+  language `400`, malformed JSON `400`, Ruby `501`, and CORS. After shutdown there
+  were no child `java` processes, no `polyglotmesh-java-*` temporary directories,
+  and no `ERROR`/`WARN` lines in the application log.
 - Day 16 (26 November 2026), `mvn -B -ntp clean verify`: **115 tests, 0 failures,
   0 errors, 0 skipped**; `BUILD SUCCESS` in 2 min 52 s; jar written to `target/`.
   New coverage exercises independent setup/execution/compile/Java-run budgets,

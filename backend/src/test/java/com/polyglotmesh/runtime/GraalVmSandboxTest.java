@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import java.time.Duration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -41,7 +42,23 @@ class GraalVmSandboxTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.output()).isEqualTo("Hello PolyglotMesh\n");
+        assertThat(result.stderr()).isEmpty();
         assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
+    }
+
+    @Test
+    void separatesStandardOutputAndStandardError() {
+        ExecutionResult result = sandbox.execute(
+                "js",
+                "console.log('to stdout'); console.error('to stderr');",
+                "");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("to stdout\n");
+        assertThat(result.stderr()).isEqualTo("to stderr\n");
+        assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
     }
 
     @Test
@@ -50,6 +67,16 @@ class GraalVmSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("boom");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.RUNTIME_ERROR);
+    }
+
+    @Test
+    void doesNotExposeBackendStackTraces() {
+        ExecutionResult result = sandbox.execute("js", "throw new Error('boom');", "");
+
+        assertThat(result.error())
+                .doesNotContain("com.polyglotmesh")
+                .doesNotContain("GraalVmSandbox");
     }
 
     @Test
@@ -58,6 +85,7 @@ class GraalVmSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).containsIgnoringCase("syntax");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SYNTAX_ERROR);
     }
 
     @Test
@@ -77,7 +105,8 @@ class GraalVmSandboxTest {
 
     @Test
     @Timeout(15)
-    void cancelsInfiniteLoops() {        GraalVmSandbox quick = new GraalVmSandbox(
+    void cancelsInfiniteLoops() {
+        GraalVmSandbox quick = new GraalVmSandbox(
                 engine, properties(Duration.ofMillis(300), 1_000), executionProperties());
         try {
             long startedAt = System.nanoTime();
@@ -86,6 +115,7 @@ class GraalVmSandboxTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.error()).contains("timed out");
+            assertThat(result.status()).isEqualTo(ExecutionStatus.TIMEOUT);
             assertThat(elapsedMs).isLessThan(5_000);
         } finally {
             quick.close();
@@ -103,6 +133,7 @@ class GraalVmSandboxTest {
             assertThat(result.success()).isTrue();
             assertThat(result.output()).endsWith("[output truncated]");
             assertThat(result.output().length()).isLessThan(80);
+            assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
         } finally {
             small.close();
         }
@@ -146,7 +177,9 @@ class GraalVmSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.output()).isEqualTo("before\n");
+        assertThat(result.stderr()).isEmpty();
         assertThat(result.error()).contains("after");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.RUNTIME_ERROR);
     }
 
     @Test
@@ -160,6 +193,7 @@ class GraalVmSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("shutting down");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.CANCELLED);
     }
 
     private static GraalVmProperties properties(Duration timeout, int maxOutputChars) {

@@ -3,6 +3,7 @@ package com.polyglotmesh.runtime;
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
@@ -127,7 +128,11 @@ public class JavaExecutionSandbox {
         String typeName = entryClassName(source);
         if (typeName == null) {
             return ExecutionResult.failure(
-                    "No top-level type declaration found.", elapsedMillis(startedAt));
+                    ExecutionStatus.COMPILE_ERROR,
+                    "",
+                    "",
+                    "No top-level type declaration found.",
+                    elapsedMillis(startedAt));
         }
 
         Path workDir = null;
@@ -145,17 +150,29 @@ public class JavaExecutionSandbox {
                 // class files, so let it finish before removing the directory.
                 deferCleanup = compilation.timedOut();
                 return ExecutionResult.failure(
-                        compilation.error(), elapsedMillis(startedAt));
+                        compilation.status(),
+                        "",
+                        "",
+                        compilation.error(),
+                        elapsedMillis(startedAt));
             }
             return run(launchName(typeName, source), classesDir, workDir, stdin, startedAt);
         } catch (IOException exception) {
             log.error("Java execution setup failed", exception);
             return ExecutionResult.failure(
-                    "Execution failed on the server.", elapsedMillis(startedAt));
+                    ExecutionStatus.INTERNAL_ERROR,
+                    "",
+                    "",
+                    "Execution failed on the server.",
+                    elapsedMillis(startedAt));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return ExecutionResult.failure(
-                    "Execution was interrupted.", elapsedMillis(startedAt));
+                    ExecutionStatus.CANCELLED,
+                    "",
+                    "",
+                    "Execution was interrupted.",
+                    elapsedMillis(startedAt));
         } finally {
             if (workDir != null) {
                 activeWorkDirs.remove(workDir);
@@ -187,27 +204,34 @@ public class JavaExecutionSandbox {
     private CompileOutcome compile(Path sourceFile, Path classesDir) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) {
-            return new CompileOutcome("No Java compiler is available on this server.", false);
+            return new CompileOutcome(
+                    "No Java compiler is available on this server.",
+                    ExecutionStatus.INTERNAL_ERROR);
         }
 
         Future<String> task = compilerExecutor.submit(
                 () -> compileNow(compiler, sourceFile, classesDir));
         try {
             String error = task.get(executionProperties.compileTimeoutNanos(), TimeUnit.NANOSECONDS);
-            return new CompileOutcome(error, false);
+            return new CompileOutcome(
+                    error,
+                    error == null ? ExecutionStatus.SUCCESS : ExecutionStatus.COMPILE_ERROR);
         } catch (TimeoutException timeout) {
             task.cancel(true);
             long timeoutMs = Math.max(
                     1, TimeUnit.NANOSECONDS.toMillis(executionProperties.compileTimeoutNanos()));
             return new CompileOutcome(
-                    "Compilation timed out after " + timeoutMs + " ms.", true);
+                    "Compilation timed out after " + timeoutMs + " ms.",
+                    ExecutionStatus.TIMEOUT);
         } catch (ExecutionException failure) {
             log.error("Java compilation failed", failure.getCause());
-            return new CompileOutcome("Execution failed on the server.", false);
+            return new CompileOutcome(
+                    "Execution failed on the server.", ExecutionStatus.INTERNAL_ERROR);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             task.cancel(true);
-            return new CompileOutcome("Execution was interrupted.", false);
+            return new CompileOutcome(
+                    "Execution was interrupted.", ExecutionStatus.CANCELLED);
         }
     }
 
@@ -277,7 +301,7 @@ public class JavaExecutionSandbox {
             StreamCollector stdout = new StreamCollector(
                     process.getInputStream(), properties.maxOutputChars(), OUTPUT_TRUNCATED);
             StreamCollector stderr = new StreamCollector(
-                    process.getErrorStream(), properties.maxErrorChars(), ERROR_TRUNCATED);
+                    process.getErrorStream(), properties.maxOutputChars(), OUTPUT_TRUNCATED);
             Thread stdoutReader = stdout.start("polyglotmesh-java-stdout");
             Thread stderrReader = stderr.start("polyglotmesh-java-stderr");
 
@@ -304,19 +328,22 @@ public class JavaExecutionSandbox {
 
             if (!finished) {
                 return ExecutionResult.failure(
+                        ExecutionStatus.TIMEOUT,
                         output,
+                        error,
                         "Execution timed out after "
                                 + executionProperties.javaExecutionTimeoutMillis() + " ms.",
                         elapsed);
             }
             int exitCode = process.exitValue();
             if (exitCode == 0) {
-                return ExecutionResult.success(output + error, elapsed);
+                return ExecutionResult.success(output, error, elapsed);
             }
             String failure = error.isBlank()
                     ? "Program exited with status " + exitCode + "."
-                    : error;
-            return ExecutionResult.failure(output, failure, elapsed);
+                    : limit(error, properties.maxErrorChars(), ERROR_TRUNCATED);
+            return ExecutionResult.failure(
+                    ExecutionStatus.RUNTIME_ERROR, output, error, failure, elapsed);
         } finally {
             runningProcesses.remove(process);
             if (process.isAlive()) {
@@ -437,7 +464,11 @@ public class JavaExecutionSandbox {
         pendingCleanup.clear();
     }
 
-    private record CompileOutcome(String error, boolean timedOut) {
+    private record CompileOutcome(String error, ExecutionStatus status) {
+
+        boolean timedOut() {
+            return status == ExecutionStatus.TIMEOUT;
+        }
     }
 
     /** Drains a child stream, keeping at most {@code maxChars} characters. */

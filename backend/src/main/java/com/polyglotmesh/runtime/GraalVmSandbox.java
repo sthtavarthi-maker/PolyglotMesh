@@ -3,6 +3,7 @@ package com.polyglotmesh.runtime;
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import jakarta.annotation.PreDestroy;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -104,51 +105,73 @@ public class GraalVmSandbox implements AutoCloseable {
             evaluation = workers.submit(() -> evaluating.eval(polyglotLanguageId, source));
             evaluation.get(properties.timeoutMillis(), TimeUnit.MILLISECONDS);
 
-            return ExecutionResult.success(captured(out, err), elapsedMillis(startedAt));
+            return ExecutionResult.success(
+                    captured(out), captured(err), elapsedMillis(startedAt));
         } catch (SetupAbortedException aborted) {
-            return ExecutionResult.failure(
-                    captured(out, err), aborted.getMessage(), elapsedMillis(startedAt));
+            return failure(aborted.status(), out, err, aborted.getMessage(), startedAt);
         } catch (TimeoutException timeout) {
             cancel(evaluation, context);
-            return ExecutionResult.failure(
-                    captured(out, err),
+            return failure(
+                    ExecutionStatus.TIMEOUT,
+                    out,
+                    err,
                     "Execution timed out after " + properties.timeoutMillis() + " ms.",
-                    elapsedMillis(startedAt));
+                    startedAt);
         } catch (ExecutionException failure) {
-            return ExecutionResult.failure(
-                    captured(out, err),
-                    describe(failure.getCause()),
-                    elapsedMillis(startedAt));
+            Throwable cause = failure.getCause();
+            return failure(classify(cause), out, err, describe(cause), startedAt);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             cancel(evaluation, context);
-            return ExecutionResult.failure(
-                    captured(out, err),
+            return failure(
+                    ExecutionStatus.CANCELLED,
+                    out,
+                    err,
                     "Execution was interrupted.",
-                    elapsedMillis(startedAt));
+                    startedAt);
         } catch (RejectedExecutionException rejected) {
-            return ExecutionResult.failure(
-                    captured(out, err),
+            return failure(
+                    ExecutionStatus.CANCELLED,
+                    out,
+                    err,
                     "The execution service is shutting down.",
-                    elapsedMillis(startedAt));
+                    startedAt);
         } catch (PolyglotException exception) {
             // Raised while creating or preparing the context, not by the guest.
-            return ExecutionResult.failure(
-                    captured(out, err),
-                    describe(exception),
-                    elapsedMillis(startedAt));
+            return failure(classify(exception), out, err, describe(exception), startedAt);
         } catch (RuntimeException exception) {
             log.error("Sandbox setup failed for language '{}'", polyglotLanguageId, exception);
-            return ExecutionResult.failure(
-                    captured(out, err),
+            return failure(
+                    ExecutionStatus.INTERNAL_ERROR,
+                    out,
+                    err,
                     "Execution failed on the server.",
-                    elapsedMillis(startedAt));
+                    startedAt);
         } finally {
             if (context != null) {
                 activeContexts.remove(context);
             }
             closeQuietly(context);
         }
+    }
+
+    private ExecutionResult failure(
+            ExecutionStatus status,
+            ByteArrayOutputStream out,
+            ByteArrayOutputStream err,
+            String message,
+            long startedAt) {
+        return ExecutionResult.failure(
+                status, captured(out), captured(err), message, elapsedMillis(startedAt));
+    }
+
+    private static ExecutionStatus classify(Throwable cause) {
+        if (cause instanceof PolyglotException exception) {
+            return exception.isSyntaxError()
+                    ? ExecutionStatus.SYNTAX_ERROR
+                    : ExecutionStatus.RUNTIME_ERROR;
+        }
+        return ExecutionStatus.INTERNAL_ERROR;
     }
 
     /**
@@ -185,7 +208,9 @@ public class GraalVmSandbox implements AutoCloseable {
             setup.cancel(true);
             closeQuietly(handoff.abandon());
             throw new SetupAbortedException(
-                    "Execution setup timed out after " + properties.setupTimeoutMillis() + " ms.");
+                    ExecutionStatus.TIMEOUT,
+                    "Execution setup timed out after "
+                            + properties.setupTimeoutMillis() + " ms.");
         } catch (ExecutionException failure) {
             Throwable cause = failure.getCause();
             if (cause instanceof RuntimeException runtime) {
@@ -199,7 +224,8 @@ public class GraalVmSandbox implements AutoCloseable {
             Thread.currentThread().interrupt();
             setup.cancel(true);
             closeQuietly(handoff.abandon());
-            throw new SetupAbortedException("Execution was interrupted.");
+            throw new SetupAbortedException(
+                    ExecutionStatus.CANCELLED, "Execution was interrupted.");
         }
     }
 
@@ -315,14 +341,12 @@ public class GraalVmSandbox implements AutoCloseable {
         }
     }
 
-    private String captured(ByteArrayOutputStream out, ByteArrayOutputStream err) {
-        String stdout = out.toString(StandardCharsets.UTF_8);
-        String stderr = err.toString(StandardCharsets.UTF_8);
-        String combined = stderr.isEmpty() ? stdout : stdout + stderr;
-        if (combined.length() <= properties.maxOutputChars()) {
-            return combined;
+    private String captured(ByteArrayOutputStream stream) {
+        String text = stream.toString(StandardCharsets.UTF_8);
+        if (text.length() <= properties.maxOutputChars()) {
+            return text;
         }
-        return combined.substring(0, properties.maxOutputChars()) + OUTPUT_TRUNCATED;
+        return text.substring(0, properties.maxOutputChars()) + OUTPUT_TRUNCATED;
     }
 
     private String describe(Throwable cause) {
@@ -365,8 +389,15 @@ public class GraalVmSandbox implements AutoCloseable {
     /** Signals that context setup did not finish within its budget. */
     private static final class SetupAbortedException extends RuntimeException {
 
-        private SetupAbortedException(String message) {
+        private final ExecutionStatus status;
+
+        private SetupAbortedException(ExecutionStatus status, String message) {
             super(message);
+            this.status = status;
+        }
+
+        private ExecutionStatus status() {
+            return status;
         }
     }
 

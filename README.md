@@ -6,12 +6,13 @@ PolyglotMesh is built on **Java 21 + GraalVM** and uses the **GraalVM Polyglot A
 languages inside a single JVM process — no external execution service, container runtime or third-party
 judge is involved.
 
-> **Project status:** Week 3 — backend hardening in progress (Days 15–16).
+> **Project status:** Week 3 — backend hardening in progress (Days 15–17).
 > The REST backend executes Java, Python and JavaScript for real, reports available languages,
-> enforces rate/concurrency limits, validates and size-limits requests, and bounds setup,
-> execution, compilation and Java run time separately. The frontend is not wired to the backend
-> yet; execution is currently available through the REST API. The other six editor languages
-> remain editor-only.
+> enforces rate/concurrency limits, validates and size-limits requests, bounds setup, execution,
+> compilation and Java run time separately, and returns separate stdout/stderr with a status
+> classification and compiler diagnostics. The frontend is not wired to the backend yet;
+> execution is currently available through the REST API. The other six editor languages remain
+> editor-only.
 
 ---
 
@@ -120,6 +121,7 @@ everything) is documented in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETU
 | 14 | Operational finalization: graceful shutdown, build metadata, final verification and documentation |
 | 15 | Backend security hardening: body-size guard, strict JSON, sandbox assertions and security tests |
 | 16 | Execution resource management: separate setup/execution/compile budgets, bounded sandbox pool and cleanup |
+| 17 | Execution diagnostics: separate stdout/stderr, status classification, compiler diagnostics and safe errors |
 
 Week 2 is complete for the backend. Week 3 hardens it. Java, Python and JavaScript execute;
 Ruby, C, C++, Rust, Go and R remain editor-only and return an honest `501`. Further weekly plans

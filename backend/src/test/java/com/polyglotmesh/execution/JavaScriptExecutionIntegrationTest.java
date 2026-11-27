@@ -33,7 +33,9 @@ class JavaScriptExecutionIntegrationTest {
         assertThat(body.path("success").asBoolean()).isTrue();
         assertThat(body.path("language").asText()).isEqualTo("javascript");
         assertThat(body.path("output").asText()).isEqualTo("Hello PolyglotMesh\n");
+        assertThat(body.path("stderr").asText()).isEmpty();
         assertThat(body.path("error").isNull()).isTrue();
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
         assertThat(body.path("executionTimeMs").asLong()).isGreaterThanOrEqualTo(0);
     }
 
@@ -49,6 +51,21 @@ class JavaScriptExecutionIntegrationTest {
     }
 
     @Test
+    void separatesStandardOutputAndStandardError() {
+        ResponseEntity<JsonNode> response = execute(Map.of(
+                "language", "javascript",
+                "code", "console.log('out'); console.error('err');",
+                "input", ""));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode body = response.getBody();
+        assertThat(body.path("success").asBoolean()).isTrue();
+        assertThat(body.path("output").asText()).isEqualTo("out\n");
+        assertThat(body.path("stderr").asText()).isEqualTo("err\n");
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
+    }
+
+    @Test
     void reportsJavaScriptFailuresWithoutAnHttpError() {
         ResponseEntity<JsonNode> response = execute(Map.of(
                 "language", "javascript",
@@ -58,6 +75,7 @@ class JavaScriptExecutionIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().path("success").asBoolean()).isFalse();
         assertThat(response.getBody().path("error").asText()).contains("boom");
+        assertThat(response.getBody().path("status").asText()).isEqualTo("RUNTIME_ERROR");
     }
 
     @Test

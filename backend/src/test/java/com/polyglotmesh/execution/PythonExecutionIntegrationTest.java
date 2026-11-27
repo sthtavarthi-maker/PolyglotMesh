@@ -33,7 +33,9 @@ class PythonExecutionIntegrationTest {
         assertThat(body.path("success").asBoolean()).isTrue();
         assertThat(body.path("language").asText()).isEqualTo("python");
         assertThat(body.path("output").asText()).isEqualTo("Hello from Python\n");
+        assertThat(body.path("stderr").asText()).isEmpty();
         assertThat(body.path("error").isNull()).isTrue();
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
     }
 
     @Test
@@ -53,6 +55,25 @@ class PythonExecutionIntegrationTest {
     }
 
     @Test
+    void separatesStandardOutputAndStandardError() {
+        ResponseEntity<JsonNode> response = execute(Map.of(
+                "language", "python",
+                "code", """
+                        import sys
+                        print('out')
+                        print('err', file=sys.stderr)
+                        """,
+                "input", ""));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode body = response.getBody();
+        assertThat(body.path("success").asBoolean()).isTrue();
+        assertThat(body.path("output").asText()).isEqualTo("out\n");
+        assertThat(body.path("stderr").asText()).isEqualTo("err\n");
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
+    }
+
+    @Test
     void reportsPythonFailuresWithoutAnHttpError() {
         ResponseEntity<JsonNode> response = execute(Map.of(
                 "language", "python",
@@ -62,6 +83,7 @@ class PythonExecutionIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().path("success").asBoolean()).isFalse();
         assertThat(response.getBody().path("error").asText()).contains("ZeroDivisionError");
+        assertThat(response.getBody().path("status").asText()).isEqualTo("RUNTIME_ERROR");
     }
 
     private ResponseEntity<JsonNode> execute(Map<String, String> body) {

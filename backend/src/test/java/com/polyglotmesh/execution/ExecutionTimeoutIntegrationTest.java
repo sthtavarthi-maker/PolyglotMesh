@@ -36,10 +36,12 @@ class ExecutionTimeoutIntegrationTest {
 
         assertThat(timedOut.path("success").asBoolean()).isFalse();
         assertThat(timedOut.path("error").asText()).contains("timed out");
+        assertThat(timedOut.path("status").asText()).isEqualTo("TIMEOUT");
 
         JsonNode recovered = execute("javascript", "console.log('after timeout');");
 
         assertThat(recovered.path("success").asBoolean()).isTrue();
+        assertThat(recovered.path("status").asText()).isEqualTo("SUCCESS");
         assertThat(recovered.path("output").asText()).isEqualTo("after timeout\n");
     }
 
@@ -50,10 +52,12 @@ class ExecutionTimeoutIntegrationTest {
 
         assertThat(timedOut.path("success").asBoolean()).isFalse();
         assertThat(timedOut.path("error").asText()).contains("timed out");
+        assertThat(timedOut.path("status").asText()).isEqualTo("TIMEOUT");
 
         JsonNode recovered = execute("python", "print('after timeout')");
 
         assertThat(recovered.path("success").asBoolean()).isTrue();
+        assertThat(recovered.path("status").asText()).isEqualTo("SUCCESS");
         assertThat(recovered.path("output").asText()).isEqualTo("after timeout\n");
     }
 
@@ -72,6 +76,7 @@ class ExecutionTimeoutIntegrationTest {
 
         assertThat(timedOut.path("success").asBoolean()).isFalse();
         assertThat(timedOut.path("error").asText()).contains("timed out");
+        assertThat(timedOut.path("status").asText()).isEqualTo("TIMEOUT");
 
         JsonNode recovered = execute("java", """
                 public class Main {
@@ -82,6 +87,7 @@ class ExecutionTimeoutIntegrationTest {
                 """);
 
         assertThat(recovered.path("success").asBoolean()).isTrue();
+        assertThat(recovered.path("status").asText()).isEqualTo("SUCCESS");
         assertThat(recovered.path("output").asText()).isEqualTo("after timeout\n");
     }
 

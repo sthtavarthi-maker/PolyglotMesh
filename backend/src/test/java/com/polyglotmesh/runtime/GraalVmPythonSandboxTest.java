@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import java.time.Duration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -40,7 +41,24 @@ class GraalVmPythonSandboxTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.output()).isEqualTo("Hello PolyglotMesh\n");
+        assertThat(result.stderr()).isEmpty();
         assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
+    }
+
+    @Test
+    void separatesStandardOutputAndStandardError() {
+        ExecutionResult result = sandbox.execute("python", """
+                import sys
+                print('to stdout')
+                print('to stderr', file=sys.stderr)
+                """, "");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("to stdout\n");
+        assertThat(result.stderr()).isEqualTo("to stderr\n");
+        assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
     }
 
     @Test
@@ -84,6 +102,16 @@ class GraalVmPythonSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("ZeroDivisionError");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.RUNTIME_ERROR);
+    }
+
+    @Test
+    void doesNotExposeBackendStackTraces() {
+        ExecutionResult result = sandbox.execute("python", "print(1 / 0)", "");
+
+        assertThat(result.error())
+                .doesNotContain("com.polyglotmesh")
+                .doesNotContain("GraalVmSandbox");
     }
 
     @Test
@@ -92,6 +120,7 @@ class GraalVmPythonSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).containsIgnoringCase("syntax");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SYNTAX_ERROR);
     }
 
     @Test
@@ -163,6 +192,7 @@ class GraalVmPythonSandboxTest {
             assertThat(result.success()).isTrue();
             assertThat(result.output()).endsWith("[output truncated]");
             assertThat(result.output().length()).isLessThan(80);
+            assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
         } finally {
             small.close();
         }
@@ -180,6 +210,7 @@ class GraalVmPythonSandboxTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.error()).contains("timed out");
+            assertThat(result.status()).isEqualTo(ExecutionStatus.TIMEOUT);
             assertThat(elapsedMs).isLessThan(10_000);
         } finally {
             quick.close();

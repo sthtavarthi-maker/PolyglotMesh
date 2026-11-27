@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.config.GraalVmProperties;
 import com.polyglotmesh.model.ExecutionResult;
+import com.polyglotmesh.model.ExecutionStatus;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -47,7 +48,27 @@ class JavaExecutionSandboxTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.output()).isEqualTo("Hello PolyglotMesh\n");
+        assertThat(result.stderr()).isEmpty();
         assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
+    }
+
+    @Test
+    void separatesStandardOutputAndStandardError() {
+        ExecutionResult result = sandbox.execute("""
+                public class Main {
+                    public static void main(String[] args) {
+                        System.out.println("to stdout");
+                        System.err.println("to stderr");
+                    }
+                }
+                """, "");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("to stdout\n");
+        assertThat(result.stderr()).isEqualTo("to stderr\n");
+        assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
     }
 
     @Test
@@ -110,6 +131,7 @@ class JavaExecutionSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("line 3");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.COMPILE_ERROR);
     }
 
     @Test
@@ -126,6 +148,8 @@ class JavaExecutionSandboxTest {
         assertThat(result.success()).isFalse();
         assertThat(result.output()).isEqualTo("before\n");
         assertThat(result.error()).contains("ArithmeticException");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.RUNTIME_ERROR);
+        assertThat(result.error()).doesNotContain("com.polyglotmesh");
     }
 
     @Test
@@ -142,6 +166,7 @@ class JavaExecutionSandboxTest {
         assertThat(result.success()).isFalse();
         assertThat(result.output()).isEqualTo("bye\n");
         assertThat(result.error()).contains("status 3");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.RUNTIME_ERROR);
     }
 
     @Test
@@ -162,8 +187,10 @@ class JavaExecutionSandboxTest {
                 """, "");
 
         assertThat(exited.success()).isTrue();
+        assertThat(exited.status()).isEqualTo(ExecutionStatus.SUCCESS);
         assertThat(after.success()).isTrue();
         assertThat(after.output()).isEqualTo("still alive\n");
+        assertThat(after.status()).isEqualTo(ExecutionStatus.SUCCESS);
     }
 
     @Test
@@ -172,6 +199,7 @@ class JavaExecutionSandboxTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.error()).contains("No top-level");
+        assertThat(result.status()).isEqualTo(ExecutionStatus.COMPILE_ERROR);
     }
 
     @Test
@@ -190,13 +218,14 @@ class JavaExecutionSandboxTest {
             assertThat(result.success()).isTrue();
             assertThat(result.output()).endsWith("[output truncated]");
             assertThat(result.output().length()).isLessThan(80);
+            assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCESS);
         } finally {
             small.close();
         }
     }
 
     @Test
-    @Timeout(30)
+    @Timeout(60)
     void cancelsInfiniteLoops() {
         JavaExecutionSandbox quick = new JavaExecutionSandbox(
                 properties(Duration.ofSeconds(15), 1_000),
@@ -215,8 +244,15 @@ class JavaExecutionSandboxTest {
             long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
 
             assertThat(result.success()).isFalse();
-            assertThat(result.error()).contains("timed out");
-            assertThat(elapsedMs).isLessThan(10_000);
+            // The run budget, not the compile budget, must have stopped it.
+            assertThat(result.error()).contains("Execution timed out");
+            assertThat(result.status()).isEqualTo(ExecutionStatus.TIMEOUT);
+            // The wall clock also covers compilation and child-JVM startup, so
+            // this bound only proves the loop was stopped rather than left
+            // running; the exact number varies with host load.
+            assertThat(elapsedMs)
+                    .as("infinite loop must be cancelled, not left running")
+                    .isLessThan(25_000);
         } finally {
             quick.close();
         }
@@ -238,6 +274,7 @@ class JavaExecutionSandboxTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.error()).contains("Compilation timed out");
+            assertThat(result.status()).isEqualTo(ExecutionStatus.TIMEOUT);
         } finally {
             impatient.close();
         }

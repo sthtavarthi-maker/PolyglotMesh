@@ -39,7 +39,9 @@ class JavaExecutionIntegrationTest {
         assertThat(body.path("success").asBoolean()).isTrue();
         assertThat(body.path("language").asText()).isEqualTo("java");
         assertThat(body.path("output").asText()).isEqualTo("Hello from Java\n");
+        assertThat(body.path("stderr").asText()).isEmpty();
         assertThat(body.path("error").isNull()).isTrue();
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
     }
 
     @Test
@@ -65,6 +67,29 @@ class JavaExecutionIntegrationTest {
     }
 
     @Test
+    void separatesStandardOutputAndStandardError() {
+        ResponseEntity<JsonNode> response = execute(Map.of(
+                "language", "java",
+                "code", """
+                        public class Main {
+                            public static void main(String[] args) {
+                                System.out.println("out");
+                                System.err.println("err");
+                            }
+                        }
+                        """,
+                "input", ""));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode body = response.getBody();
+        assertThat(body.path("success").asBoolean()).isTrue();
+        assertThat(body.path("output").asText()).isEqualTo("out\n");
+        assertThat(body.path("stderr").asText()).isEqualTo("err\n");
+        assertThat(body.path("error").isNull()).isTrue();
+        assertThat(body.path("status").asText()).isEqualTo("SUCCESS");
+    }
+
+    @Test
     void reportsCompilationFailureWithoutAnHttpError() {
         ResponseEntity<JsonNode> response = execute(Map.of(
                 "language", "java",
@@ -80,6 +105,7 @@ class JavaExecutionIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().path("success").asBoolean()).isFalse();
         assertThat(response.getBody().path("error").asText()).contains("missingMethod");
+        assertThat(response.getBody().path("status").asText()).isEqualTo("COMPILE_ERROR");
     }
 
     @Test
