@@ -64,6 +64,19 @@ class PolyglotMeshApplicationTests {
     }
 
     @Test
+    void metricsEndpointIsExposed() {
+        // Any request creates the built-in HTTP server meter.
+        restTemplate.getForEntity("/api/health", String.class);
+
+        ResponseEntity<JsonNode> response =
+                restTemplate.getForEntity("/actuator/metrics", JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().path("names").toString())
+                .contains("http.server.requests");
+    }
+
+    @Test
     void languagesEndpointReportsEveryLanguageWithAvailability() {
         ResponseEntity<JsonNode> response =
                 restTemplate.getForEntity("/api/languages", JsonNode.class);

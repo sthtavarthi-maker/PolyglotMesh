@@ -9,8 +9,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.polyglotmesh.config.ExecutionProperties;
 import com.polyglotmesh.dto.ExecutionRequest;
 import com.polyglotmesh.exception.GlobalExceptionHandler;
+import com.polyglotmesh.observability.ExecutionTelemetry;
 import com.polyglotmesh.service.ExecutionGate;
 import com.polyglotmesh.service.ExecutionService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -29,7 +31,13 @@ import org.springframework.test.web.servlet.MockMvc;
  * fits below that limit, so it reaches field validation and yields 400.</p>
  */
 @WebMvcTest(ExecutionController.class)
-@Import({ExecutionService.class, ExecutionGate.class, GlobalExceptionHandler.class})
+@Import({
+    ExecutionService.class,
+    ExecutionTelemetry.class,
+    SimpleMeterRegistry.class,
+    ExecutionGate.class,
+    GlobalExceptionHandler.class
+})
 @EnableConfigurationProperties(ExecutionProperties.class)
 @TestPropertySource(properties = "polyglotmesh.security.max-request-bytes=16384")
 class ExecutionControllerTest {

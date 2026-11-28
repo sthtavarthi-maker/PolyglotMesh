@@ -33,6 +33,8 @@ public class WebConfig implements WebMvcConfigurer {
                 .allowedOrigins(allowedOrigins.toArray(String[]::new))
                 .allowedMethods("GET", "POST", "OPTIONS")
                 .allowedHeaders("Content-Type", "Authorization")
+                // Lets the browser read the correlation id the backend assigns.
+                .exposedHeaders("X-Request-Id")
                 .maxAge(3600);
     }
 }

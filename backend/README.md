@@ -9,7 +9,10 @@ bounded resource management: separate setup/execution/compile budgets, a fixed
 sandbox worker pool, tracked-context shutdown and long-running-program tests.
 Day 17 standardises execution diagnostics: stdout and stderr are separate, every
 result carries a `status` classification, compiler diagnostics are preserved and
-internal stack traces are never returned. JavaScript (GraalJS), Python (GraalPy)
+internal stack traces are never returned. Day 18 adds observability: every
+request gets a correlation id, every completed execution is counted and timed by
+language and outcome, and one structured log line records the outcome without
+logging source code or standard input. JavaScript (GraalJS), Python (GraalPy)
 and Java (JDK toolchain) execute for real, `GET /api/languages` reports
 capabilities, the execution endpoint is protected by per-client rate limits and
 bounded concurrency, and shutdown is graceful. Every other language answers
@@ -305,20 +308,25 @@ a container boundary.
 ## Architecture
 
 ```
-HTTP -> RequestSizeLimitFilter  (POST /api/execute body cap; 413 before parsing)
+HTTP -> RequestIdFilter          (correlation id, MDC, X-Request-Id)
           |
           v
-        ExecutionController   (validation, status codes)
+        RequestSizeLimitFilter   (POST /api/execute body cap; 413 before parsing)
           |
           v
-        ExecutionGate         (per-client quota + bounded concurrency; 429)
+        ExecutionController      (validation, status codes)
           |
           v
-        ExecutionService      (language resolution, executor routing)
+        ExecutionGate            (per-client quota + bounded concurrency; 429)
           |
           v
-        CodeExecutor          (one bean per language:
-          |                    JavaScriptExecutor, PythonExecutor, JavaExecutor)
+        ExecutionService         (language resolution, executor routing)
+          |
+          +--> ExecutionTelemetry (counter + timer by language/status; structured log)
+          |
+          v
+        CodeExecutor             (one bean per language:
+          |                       JavaScriptExecutor, PythonExecutor, JavaExecutor)
           |
           +--> GraalVmSandbox  (fresh locked-down Context per request)
           |         |
@@ -334,10 +342,16 @@ HTTP -> LanguageController -> ExecutionService.languageStatuses()
 ```
 
 - `ExecutionRequest` / `ExecutionResponse` / `ApiError` are the API contract.
+- `RequestIdFilter` assigns a safe correlation id (or keeps a well-formed
+  caller-supplied one), publishes it as `X-Request-Id`, and puts it in the MDC so
+  every log line from that request can be correlated.
 - `RequestSizeLimitFilter` runs before Spring MVC on `POST /api/execute`, reads at
   most the configured limit + 1 bytes, and returns `413` before Jackson parses an
   oversized body. It also sets `X-Content-Type-Options: nosniff` and
   `Cache-Control: no-store` on execution responses.
+- `ExecutionTelemetry` records one counter and one timer per completed execution,
+  tagged by language and outcome, and writes one structured log line. It never
+  receives source code, stdin or program output.
 - `ExecutionResult` stays internal so adapters can evolve without breaking clients.
 - `ExecutionGate` runs before any language is resolved. It enforces a
   fixed-window per-client request quota and a bounded number of concurrent
@@ -432,13 +446,48 @@ deployed origin to the property when there is a real need.
 - A forced kill (for example `Stop-Process -Force` on Windows) bypasses graceful
   shutdown; the next startup sweeps stale Java work directories.
 
+## Observability
+
+Every request gets a correlation id. A caller may send `X-Request-Id`; the value
+is echoed only when it matches `[A-Za-z0-9._:-]{8,128}`, otherwise a UUID is
+generated. The id is returned in the same header, placed in the logging MDC for
+the duration of the request, and exposed to allowed CORS origins so browser
+clients can read it. Rejecting unsafe values prevents log injection and response
+splitting.
+
+Each completed execution writes one line at `INFO`:
+
+```text
+execution requestId=3f1c9e2a-... language=javascript status=SUCCESS success=true durationMs=32
+```
+
+The line never contains source code, standard input, program output or error
+text; those stay in the API response. Program failures are normal outcomes and
+are logged at `INFO` with their `status`, not as warnings.
+
+Micrometer metrics (in-memory, one instance):
+
+| Metric | Type | Tags | Meaning |
+|---|---|---|---|
+| `polyglotmesh.executions` | counter | `language`, `status` | Completed executions |
+| `polyglotmesh.execution.duration` | timer | `language`, `status` | Execution time reported by the sandbox |
+| `http.server.requests` | timer | Spring Boot defaults | End-to-end HTTP latency and status |
+
+`GET /actuator/metrics` and `GET /actuator/metrics/{name}` are exposed read-only;
+for example `/actuator/metrics/polyglotmesh.executions?tag=language:javascript`.
+Metrics are aggregate operational data and never include program text. The
+endpoint is not covered by CORS, so a browser page from another origin cannot
+read it. The registry is in memory and resets on restart; a multi-instance or
+long-lived deployment should add a registry such as Prometheus. Micrometer is
+already provided by Spring Boot Actuator, so this adds no dependency.
+
 ## Tests
 
 | Test class | Covers |
 |---|---|
-| `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health`, `/actuator/info` build metadata, `/api/languages` availability on a real random port |
+| `PolyglotMeshApplicationTests` | Context startup, `/api/health`, `/actuator/health`, `/actuator/info` build metadata, exposed `/actuator/metrics`, `/api/languages` availability on a real random port |
 | `HealthControllerTest` | Web slice: JSON body, content type, unknown API path |
-| `CorsConfigurationTest` | Allowed origin, preflight, rejected origin on the running app |
+| `CorsConfigurationTest` | Allowed origin, preflight, exposed `X-Request-Id`, rejected origin on the running app |
 | `ExecutionRequestValidationTest` | Required fields, null/blank values, size limits, boundary values, optional input |
 | `ExecutionServiceTest` | Executor routing, case-insensitive ids, unknown language, unavailable engine, duplicate executors, result mapping (stdout, stderr, diagnostic, status), availability filtering and statuses |
 | `ExecutionResultTest` | Internal result invariants: separate streams, explicit status, default classification, rejection of inconsistent results |
@@ -457,11 +506,30 @@ deployed origin to the property when there is a real need.
 | `JavaExecutionIntegrationTest` | End-to-end `/api/execute`: Java success, separate stderr, stdin, compile failure with `COMPILE_ERROR`, and 501 for Ruby |
 | `ExecutionTimeoutIntegrationTest` | End-to-end runaway programs for JavaScript, Python and Java: the configured budget stops them with `TIMEOUT`, and a later execution still succeeds |
 | `ExecutionDiagnosticsIntegrationTest` | End-to-end classification of JavaScript/Python syntax errors, Java compile and runtime errors, compiler line numbers, absence of backend stack traces, and the 400/501 `ApiError` contract |
+| `RequestIdFilterTest` | Correlation id generation, echo of well-formed ids, rejection of unsafe values, and MDC lifecycle/restoration |
+| `ExecutionTelemetryTest` | Counter and timer tags/durations; the log line carries metadata and request id but never program text |
+| `ObservabilityIntegrationTest` | End-to-end `X-Request-Id` generation/echo/replacement, execution counters and timers, and the exposed metrics endpoint |
 
 ## Verification
 
 Recorded on the development machine; timings vary, functional results matter.
 
+- Day 18 (28 November 2026), `mvn -B -ntp clean verify`: **158 tests, 0 failures,
+  0 errors, 0 skipped**; `BUILD SUCCESS` in 4 min 12 s; jar written to `target/`.
+  New coverage exercises correlation-id generation, echo of well-formed ids,
+  rejection of unsafe values, MDC lifecycle and restoration, counter/timer tags
+  and durations by language and outcome, the guarantee that the execution log
+  line carries metadata but never source/stdin/output, and end-to-end
+  `X-Request-Id` handling with the exposed metrics endpoint.
+  The packaged-jar smoke test passed **19/19 checks** — health, build metadata,
+  nine-language discovery, JavaScript success with an echoed request id,
+  generated and replaced request ids, JavaScript syntax/runtime classification,
+  Python success, Java success/compile error, `GET /actuator/metrics`, the
+  execution counter (with and without a tag filter), the execution timer,
+  unknown language `400`, malformed JSON `400`, Ruby `501`, and CORS. The run
+  produced 8 `execution requestId=...` lines, and after shutdown there were no
+  child `java` processes, no `polyglotmesh-java-*` temporary directories, and no
+  `ERROR`/`WARN` lines in the application log.
 - Day 17 (27 November 2026), `mvn -B -ntp clean verify`: **144 tests, 0 failures,
   0 errors, 0 skipped**; `BUILD SUCCESS` in 12 min 58 s; jar written to `target/`.
   The new coverage exercises the internal result invariants (separate streams,

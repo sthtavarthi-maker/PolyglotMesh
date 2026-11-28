@@ -15,6 +15,8 @@ import com.polyglotmesh.executor.CodeExecutor;
 import com.polyglotmesh.model.ExecutionResult;
 import com.polyglotmesh.model.ExecutionStatus;
 import com.polyglotmesh.model.Language;
+import com.polyglotmesh.observability.ExecutionTelemetry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,7 +33,9 @@ class ExecutionServiceTest {
         when(executor.execute(request))
                 .thenReturn(ExecutionResult.success("Hello", "warning\n", 12));
 
-        ExecutionService service = new ExecutionService(List.of(executor));
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ExecutionService service = new ExecutionService(
+                List.of(executor), new ExecutionTelemetry(registry));
         ExecutionResponse response = service.execute(request);
 
         assertThat(response.success()).isTrue();
@@ -41,6 +45,10 @@ class ExecutionServiceTest {
         assertThat(response.error()).isNull();
         assertThat(response.status()).isEqualTo(ExecutionStatus.SUCCESS);
         assertThat(response.executionTimeMs()).isEqualTo(12);
+        assertThat(registry.get(ExecutionTelemetry.EXECUTIONS_METRIC)
+                .tags("language", "javascript", "status", "SUCCESS")
+                .counter()
+                .count()).isEqualTo(1.0);
         verify(executor).execute(request);
     }
 
@@ -52,7 +60,7 @@ class ExecutionServiceTest {
         when(executor.execute(request)).thenReturn(ExecutionResult.failure(
                 ExecutionStatus.SYNTAX_ERROR, "", "", "SyntaxError", 3));
 
-        ExecutionService service = new ExecutionService(List.of(executor));
+        ExecutionService service = service(executor);
         ExecutionResponse response = service.execute(request);
 
         assertThat(response.success()).isFalse();
@@ -71,7 +79,7 @@ class ExecutionServiceTest {
         when(executor.isAvailable()).thenReturn(true);
         when(executor.execute(request)).thenReturn(ExecutionResult.success("ok", 1));
 
-        ExecutionService service = new ExecutionService(List.of(executor));
+        ExecutionService service = service(executor);
         ExecutionResponse response = service.execute(request);
 
         assertThat(response.success()).isTrue();
@@ -80,7 +88,7 @@ class ExecutionServiceTest {
 
     @Test
     void rejectsUnknownLanguage() {
-        ExecutionService service = new ExecutionService(List.of());
+        ExecutionService service = service();
 
         assertThatThrownBy(() -> service.execute(request("cobol")))
                 .isInstanceOf(UnsupportedLanguageException.class)
@@ -90,7 +98,7 @@ class ExecutionServiceTest {
 
     @Test
     void reportsUnavailableWhenNoExecutorIsRegistered() {
-        ExecutionService service = new ExecutionService(List.of());
+        ExecutionService service = service();
 
         assertThatThrownBy(() -> service.execute(request("ruby")))
                 .isInstanceOf(ExecutionUnavailableException.class)
@@ -99,7 +107,7 @@ class ExecutionServiceTest {
 
     @Test
     void reportsUnavailableWhenOnlyAnotherLanguageHasAnExecutor() {
-        ExecutionService service = new ExecutionService(List.of(executorFor(Language.JAVASCRIPT)));
+        ExecutionService service = service(executorFor(Language.JAVASCRIPT));
 
         assertThatThrownBy(() -> service.execute(request("python")))
                 .isInstanceOf(ExecutionUnavailableException.class)
@@ -110,7 +118,7 @@ class ExecutionServiceTest {
     void reportsUnavailableWhenRegisteredExecutorIsUnavailable() {
         CodeExecutor executor = executorFor(Language.PYTHON);
         when(executor.isAvailable()).thenReturn(false);
-        ExecutionService service = new ExecutionService(List.of(executor));
+        ExecutionService service = service(executor);
 
         assertThatThrownBy(() -> service.execute(request("python")))
                 .isInstanceOf(ExecutionUnavailableException.class)
@@ -122,7 +130,7 @@ class ExecutionServiceTest {
         CodeExecutor first = executorFor(Language.JAVASCRIPT);
         CodeExecutor second = executorFor(Language.JAVASCRIPT);
 
-        assertThatThrownBy(() -> new ExecutionService(List.of(first, second)))
+        assertThatThrownBy(() -> service(first, second))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("javascript");
     }
@@ -133,7 +141,7 @@ class ExecutionServiceTest {
         when(available.isAvailable()).thenReturn(true);
         CodeExecutor unavailable = executorFor(Language.PYTHON);
         when(unavailable.isAvailable()).thenReturn(false);
-        ExecutionService service = new ExecutionService(List.of(available, unavailable));
+        ExecutionService service = service(available, unavailable);
 
         assertThat(service.availableLanguages()).containsExactly(Language.JAVA);
     }
@@ -142,7 +150,7 @@ class ExecutionServiceTest {
     void reportsEveryLanguageWithItsAvailability() {
         CodeExecutor available = executorFor(Language.JAVA);
         when(available.isAvailable()).thenReturn(true);
-        ExecutionService service = new ExecutionService(List.of(available));
+        ExecutionService service = service(available);
 
         List<LanguageStatus> statuses = service.languageStatuses();
 
@@ -155,6 +163,11 @@ class ExecutionServiceTest {
                 .noneMatch(LanguageStatus::available);
         assertThat(statuses).filteredOn(status -> status.id().equals("javascript"))
                 .allMatch(status -> status.displayName().equals("JavaScript") && !status.available());
+    }
+
+    private ExecutionService service(CodeExecutor... executors) {
+        return new ExecutionService(
+                List.of(executors), new ExecutionTelemetry(new SimpleMeterRegistry()));
     }
 
     private CodeExecutor executorFor(Language language) {

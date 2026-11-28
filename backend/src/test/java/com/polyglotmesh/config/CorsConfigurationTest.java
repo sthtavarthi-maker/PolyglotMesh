@@ -53,6 +53,15 @@ class CorsConfigurationTest {
     }
 
     @Test
+    void exposesTheRequestIdHeaderToAllowedOrigin() {
+        ResponseEntity<String> response = get("/api/health", VITE_DEV_ORIGIN);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getAccessControlExposeHeaders())
+                .contains("X-Request-Id");
+    }
+
+    @Test
     void rejectsUnknownOrigin() {
         ResponseEntity<String> response =
                 get("/api/health", "http://untrusted.example");

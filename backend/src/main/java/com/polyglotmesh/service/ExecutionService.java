@@ -8,6 +8,7 @@ import com.polyglotmesh.exception.UnsupportedLanguageException;
 import com.polyglotmesh.executor.CodeExecutor;
 import com.polyglotmesh.model.ExecutionResult;
 import com.polyglotmesh.model.Language;
+import com.polyglotmesh.observability.ExecutionTelemetry;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -21,13 +22,18 @@ import org.springframework.stereotype.Service;
  * indexed by language, so a request is answered by exactly one adapter. A known
  * language with no registered adapter fails with
  * {@link ExecutionUnavailableException} instead of returning invented output.</p>
+ *
+ * <p>Every completed execution is handed to {@link ExecutionTelemetry}; the
+ * telemetry layer owns metrics and the structured execution log, keeping this
+ * class focused on routing.</p>
  */
 @Service
 public class ExecutionService {
 
     private final Map<Language, CodeExecutor> executors;
+    private final ExecutionTelemetry telemetry;
 
-    public ExecutionService(List<CodeExecutor> executors) {
+    public ExecutionService(List<CodeExecutor> executors, ExecutionTelemetry telemetry) {
         Map<Language, CodeExecutor> indexed = new EnumMap<>(Language.class);
         for (CodeExecutor executor : executors) {
             CodeExecutor existing = indexed.putIfAbsent(executor.language(), executor);
@@ -39,6 +45,7 @@ public class ExecutionService {
             }
         }
         this.executors = Map.copyOf(indexed);
+        this.telemetry = telemetry;
     }
 
     /**
@@ -58,6 +65,7 @@ public class ExecutionService {
         }
 
         ExecutionResult result = executor.execute(request);
+        telemetry.record(language, result);
         return ExecutionResponse.from(language, result);
     }
 
